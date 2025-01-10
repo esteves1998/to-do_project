@@ -14,15 +14,18 @@ import (
 func main() {
 	store := localTaskStore()
 
+	if len(os.Args) < 2 {
+		fmt.Println("Usage: [add|list|complete|delete] [options]")
+		os.Exit(1)
+	}
+
 	http.HandleFunc("/tasks", store.handleTasks)
 	http.HandleFunc("/tasks/", store.handleTasksById)
 
 	fmt.Println("Listening on :8080")
-	http.ListenAndServe(":8080", nil)
-
-	if len(os.Args) < 2 {
-		fmt.Println("Usage: [add|list|complete|delete] [options]")
-		os.Exit(1)
+	if err := http.ListenAndServe(":8080", nil); err != nil {
+		fmt.Printf("Error starting server: %v\n", err)
+		return
 	}
 
 	switch os.Args[1] {
@@ -31,9 +34,10 @@ func main() {
 		title := addCmd.String("title", "", "Title of the task")
 		desc := addCmd.String("description", "", "Description of the task")
 
-		addCmd.Parse(os.Args[2:])
+		addCmd.Parse(os.Args[2:]) //introduce checks for proper input
 		if *title == "" {
 			fmt.Println("title is required")
+			return
 		}
 		task := store.AddTask(*title, *desc)
 		//print struct with field names
@@ -148,16 +152,24 @@ func (store *inMemoryTaskStore) handleTasks(w http.ResponseWriter, r *http.Reque
 	switch r.Method {
 	case http.MethodGet:
 		tasks := store.ListTasks()
-		json.NewEncoder(w).Encode(tasks)
+		if err := json.NewEncoder(w).Encode(tasks); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+
 	case http.MethodPost:
 		task := &Task{}
 		if err := json.NewDecoder(r.Body).Decode(task); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+
 		newTask := store.AddTask(task.Title, task.Description)
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(newTask)
+
+		if err := json.NewEncoder(w).Encode(newTask); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+
 	default:
 		http.Error(w, "Only GET and POST methods are supported on this endpoint", http.StatusMethodNotAllowed)
 	}
