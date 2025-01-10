@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -18,10 +20,7 @@ type Task struct {
 	Completed   bool   `json:"completed"`
 }
 
-// Global task store
-var (
-	taskStore = localTaskStore()
-)
+var taskStore = localTaskStore()
 
 func main() {
 	go startServer()
@@ -30,6 +29,7 @@ func main() {
 
 func startServer() {
 	http.HandleFunc("/tasks", taskHandler)
+	http.HandleFunc("/tasks/", singleTaskHandler) // For operations that require a task ID
 	fmt.Printf("Starting REST API server on http://localhost:8080\n> ")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
 		fmt.Println("Error starting server:", err)
@@ -41,6 +41,7 @@ func taskHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		tasks := taskStore.ListTasks()
+		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(tasks)
 	case http.MethodPost:
 		var task Task
@@ -49,31 +50,42 @@ func taskHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		newTask := taskStore.AddTask(task.Title, task.Description)
+		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(newTask)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func singleTaskHandler(w http.ResponseWriter, r *http.Request) {
+	idStr := strings.TrimPrefix(r.URL.Path, "tasks/")
+
+	id, err := strconv.Atoi(idStr)
+	if err != nil || id <= 0 {
+		http.Error(w, "Invalid task ID", http.StatusBadRequest)
+		return
+	}
+
+	switch r.Method {
 	case http.MethodPut:
-		var task Task
-		if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
-			http.Error(w, "Invalid task data", http.StatusBadRequest)
-			return
-		}
-		err := taskStore.CompleteTask(task.ID)
-		if err != nil {
+		if err := taskStore.CompleteTask(id); err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
 	case http.MethodDelete:
-		var task Task
-		if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
-			http.Error(w, "Invalid task data", http.StatusBadRequest)
-			return
-		}
-		err := taskStore.RemoveTask(task.ID)
-		if err != nil {
+		if err := taskStore.RemoveTask(id); err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
+	case http.MethodGet:
+		task, err := taskStore.GetTask(id)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		json.NewEncoder(w).Encode(task)
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -93,6 +105,7 @@ func runCLI() {
 		input := scanner.Text()
 		parts := strings.Fields(input)
 
+		//if user gives a blank command do nothing
 		if len(parts) == 0 {
 			continue
 		}
@@ -105,6 +118,8 @@ func runCLI() {
 			handleAdd(args)
 		case "list":
 			handleList()
+		case "get":
+			handleGetTaskByID(args)
 		case "complete":
 			handleComplete(args)
 		case "delete":
@@ -147,7 +162,7 @@ func handleAdd(args []string) {
 		fmt.Println("Error:", err)
 		return
 	}
-	defer resp.Body.Close()
+	defer safeClose(resp.Body)
 
 	if resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusOK {
 		fmt.Println("Task added successfully.")
@@ -162,7 +177,7 @@ func handleList() {
 		fmt.Println("Error:", err)
 		return
 	}
-	defer resp.Body.Close()
+	defer safeClose(resp.Body)
 
 	var tasks []Task
 	if err := json.NewDecoder(resp.Body).Decode(&tasks); err != nil {
@@ -178,6 +193,31 @@ func handleList() {
 	for _, task := range tasks {
 		fmt.Printf("ID: %d, Title: %s, Description: %s, Completed: %v\n",
 			task.ID, task.Title, task.Description, task.Completed)
+	}
+}
+
+func handleGetTaskByID(args []string) {
+	if len(args) != 1 {
+		fmt.Println("Usage: get <id>")
+	}
+	id := args[0]
+	url := fmt.Sprintf("http://localhost:8080/tasks/%s", id)
+	resp, err := http.Get(url)
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+	defer safeClose(resp.Body)
+	if resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusOK {
+		var task Task
+		if err := json.NewDecoder(resp.Body).Decode(&task); err != nil {
+			fmt.Println("Error:", err)
+			return
+		}
+		fmt.Printf("ID: %d, Title: %s, Description: %s, Completed: %v\n",
+			task.ID, task.Title, task.Description, task.Completed)
+	} else {
+		fmt.Printf("Task with ID %s not found.\n", id)
 	}
 }
 
@@ -202,7 +242,7 @@ func handleComplete(args []string) {
 		fmt.Println("Error:", err)
 		return
 	}
-	defer resp.Body.Close()
+	defer safeClose(resp.Body)
 
 	if resp.StatusCode == http.StatusOK {
 		fmt.Printf("Task %s marked as completed.\n", id)
@@ -232,12 +272,18 @@ func handleDelete(args []string) {
 		fmt.Println("Error:", err)
 		return
 	}
-	defer resp.Body.Close()
+	defer safeClose(resp.Body)
 
 	if resp.StatusCode == http.StatusOK {
 		fmt.Printf("Task %s deleted successfully.\n", id)
 	} else {
 		fmt.Printf("Failed to delete task %s: %s\n", id, resp.Status)
+	}
+}
+
+func safeClose(c io.Closer) {
+	if err := c.Close(); err != nil {
+		fmt.Println("Error closing resource:", err)
 	}
 }
 
@@ -295,6 +341,17 @@ func (store *inMemoryTaskStore) ListTasks() []Task {
 	}
 
 	return taskList
+}
+
+func (store *inMemoryTaskStore) GetTask(id int) (Task, error) {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+
+	task, exists := store.tasks[id]
+	if !exists {
+		return Task{}, errors.New("task not found")
+	}
+	return task, nil
 }
 
 func (store *inMemoryTaskStore) CompleteTask(id int) error {
