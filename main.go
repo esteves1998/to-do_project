@@ -174,12 +174,12 @@ func (store *inMemoryTaskStore) handleTasksById(w http.ResponseWriter, r *http.R
 
 	switch r.Method {
 	case http.MethodPatch:
-		if store.CompleteTask(id); err != nil {
+		if err := store.CompleteTask(id); err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	case http.MethodDelete:
-		if store.RemoveTask(id); err != nil {
+		if err := store.RemoveTask(id); err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
