@@ -15,12 +15,7 @@ func main() {
 	scanner := bufio.NewScanner(os.Stdin)
 
 	fmt.Println("Task Manager")
-	fmt.Println("Commands:")
-	fmt.Println("  add <title> <description>")
-	fmt.Println("  list")
-	fmt.Println("  complete <id>")
-	fmt.Println("  delete <id>")
-	fmt.Println("  exit")
+	printHelp()
 
 	for {
 		fmt.Print("> ")
@@ -40,66 +35,89 @@ func main() {
 
 		switch cmd {
 		case "add":
-			if len(args) < 2 {
-				fmt.Println("Usage: add <title> <description>")
-				continue
-			}
-			title := args[0]
-			description := strings.Join(args[1:], " ")
-			task := store.AddTask(title, description)
-			fmt.Printf("Added task: %+v\n", task)
-
+			handleAdd(args, store)
 		case "list":
-			tasks := store.ListTasks()
-			if len(tasks) == 0 {
-				fmt.Println("No tasks available.")
-			} else {
-				for _, task := range tasks {
-					fmt.Printf("%+v\n", task)
-				}
-			}
-
+			handleList(args, store)
 		case "complete":
-			if len(args) < 1 {
-				fmt.Println("Usage: complete <id>")
-				continue
-			}
-			id, err := strconv.Atoi(args[0])
-			if err != nil {
-				fmt.Println("Invalid ID.")
-				continue
-			}
-			err = store.CompleteTask(id)
-			if err != nil {
-				fmt.Println("Error:", err)
-			} else {
-				fmt.Printf("Completed task: %d\n", id)
-			}
-
+			handleComplete(args, store)
 		case "delete":
-			if len(args) < 1 {
-				fmt.Println("Usage: delete <id>")
-				continue
-			}
-			id, err := strconv.Atoi(args[0])
-			if err != nil {
-				fmt.Println("Invalid ID.")
-				continue
-			}
-			err = store.RemoveTask(id)
-			if err != nil {
-				fmt.Println("Error:", err)
-			} else {
-				fmt.Printf("Deleted task: %d\n", id)
-			}
-
+			handleDelete(args, store)
+		case "help":
+			printHelp()
 		case "exit":
 			fmt.Println("Exiting Task Manager.")
 			os.Exit(0)
-
 		default:
-			fmt.Println("Unknown command. Available commands: add, list, complete, delete, exit")
+			fmt.Println("Unknown command. Type 'help' for available commands.")
 		}
+	}
+}
+
+func printHelp() {
+	fmt.Println("Commands:")
+	fmt.Println("  add <title> <description>    Add a new task")
+	fmt.Println("  list                         List all tasks")
+	fmt.Println("  complete <id>                Mark a task as completed")
+	fmt.Println("  delete <id>                  Delete a task")
+	fmt.Println("  help                         Show this help message")
+	fmt.Println("  exit                         Exit the program")
+}
+
+func handleAdd(args []string, store *inMemoryTaskStore) {
+	if len(args) < 2 {
+		fmt.Println("Usage: add <title> <description>")
+		return
+	}
+	title := args[0]
+	description := strings.Join(args[1:], " ")
+	task := store.AddTask(title, description)
+	fmt.Printf("Added task: %+v\n", task)
+}
+
+func handleList(_ []string, store *inMemoryTaskStore) {
+	tasks := store.ListTasks()
+	if len(tasks) == 0 {
+		fmt.Println("No tasks available.")
+		return
+	}
+	for _, task := range tasks {
+		fmt.Printf("%+v\n", task)
+	}
+}
+
+func handleComplete(args []string, store *inMemoryTaskStore) {
+	if len(args) < 1 {
+		fmt.Println("Usage: complete <id>")
+		return
+	}
+	id, err := strconv.Atoi(args[0])
+	if err != nil {
+		fmt.Println("Invalid ID.")
+		return
+	}
+	err = store.CompleteTask(id)
+	if err != nil {
+		fmt.Println("Error:", err)
+	} else {
+		fmt.Printf("Completed task: %d\n", id)
+	}
+}
+
+func handleDelete(args []string, store *inMemoryTaskStore) {
+	if len(args) < 1 {
+		fmt.Println("Usage: delete <id>")
+		return
+	}
+	id, err := strconv.Atoi(args[0])
+	if err != nil {
+		fmt.Println("Invalid ID.")
+		return
+	}
+	err = store.RemoveTask(id)
+	if err != nil {
+		fmt.Println("Error:", err)
+	} else {
+		fmt.Printf("Deleted task: %d\n", id)
 	}
 }
 
