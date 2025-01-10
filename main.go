@@ -13,70 +13,98 @@ import (
 
 func main() {
 	store := localTaskStore()
+	go startHTTPServer(store)
 
 	if len(os.Args) < 2 {
 		fmt.Println("Usage: [add|list|complete|delete] [options]")
 		os.Exit(1)
 	}
 
+	// CLI command processing
+	switch os.Args[1] {
+	case "add":
+		handleAddCommand(store)
+	case "list":
+		handleListCommand(store)
+	case "complete":
+		handleCompleteCommand(store)
+	case "delete":
+		handleDeleteCommand(store)
+	default:
+		fmt.Println("expected 'add', 'list', 'complete' or 'delete' subcommands")
+	}
+}
+
+func startHTTPServer(store *InMemoryTaskStore) {
 	http.HandleFunc("/tasks", store.handleTasks)
 	http.HandleFunc("/tasks/", store.handleTasksById)
 
 	fmt.Println("Listening on :8080")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
 		fmt.Printf("Error starting server: %v\n", err)
+	}
+}
+
+func handleAddCommand(store *InMemoryTaskStore) {
+	addCmd := flag.NewFlagSet("add", flag.ExitOnError)
+	title := addCmd.String("title", "", "Title of the task")
+	desc := addCmd.String("description", "", "Description of the task")
+
+	addCmd.Parse(os.Args[2:])
+
+	if *title == "" {
+		fmt.Println("title is required")
 		return
 	}
 
-	switch os.Args[1] {
-	case "add":
-		addCmd := flag.NewFlagSet("add", flag.ExitOnError)
-		title := addCmd.String("title", "", "Title of the task")
-		desc := addCmd.String("description", "", "Description of the task")
-
-		addCmd.Parse(os.Args[2:]) //introduce checks for proper input
-		if *title == "" {
-			fmt.Println("title is required")
-			return
-		}
-		task := store.AddTask(*title, *desc)
-		//print struct with field names
-		fmt.Printf("Added task: %+v\n", task)
-
-	case "list":
-		tasks := store.ListTasks()
-		for _, task := range tasks {
-			fmt.Printf("%+v\n", task)
-		}
-
-	case "complete":
-		completeCmd := flag.NewFlagSet("complete", flag.ExitOnError)
-		completeId := completeCmd.Int("id", 0, "ID of the task to complete")
-
-		completeCmd.Parse(os.Args[2:])
-		if *completeId == 0 {
-			fmt.Println("id is required")
-			return
-		}
-		fmt.Printf("Completed task: %+v\n", store.CompleteTask(*completeId))
-
-	case "delete":
-		deleteCmd := flag.NewFlagSet("delete", flag.ExitOnError)
-		deleteId := deleteCmd.Int("id", 0, "ID of the task to delete")
-
-		deleteCmd.Parse(os.Args[2:])
-		if *deleteId == 0 {
-			fmt.Println("id is required")
-			return
-		}
-		fmt.Printf("Deleted task: %d\n", *deleteId)
-
-	default:
-		fmt.Println("expected 'add', 'list', 'complete' or 'delete' subcommands")
-	}
-
+	task := store.AddTask(*title, *desc)
+	fmt.Printf("Added task: %+v\n", task)
 }
 
+func handleListCommand(store *InMemoryTaskStore) {
+	tasks := store.ListTasks()
+	for _, task := range tasks {
+		fmt.Printf("%+v\n", task)
+	}
+}
+
+func handleCompleteCommand(store *InMemoryTaskStore) {
+	completeCmd := flag.NewFlagSet("complete", flag.ExitOnError)
+	completeId := completeCmd.Int("id", 0, "ID of the task to complete")
+
+	completeCmd.Parse(os.Args[2:])
+
+	if *completeId == 0 {
+		fmt.Println("id is required")
+		return
+	}
+
+	if err := store.CompleteTask(*completeId); err != nil {
+		fmt.Printf("Error completing task: %v\n", err)
+		return
+	}
+	fmt.Printf("Completed task with ID: %d\n", *completeId)
+}
+
+func handleDeleteCommand(store *InMemoryTaskStore) {
+	deleteCmd := flag.NewFlagSet("delete", flag.ExitOnError)
+	deleteId := deleteCmd.Int("id", 0, "ID of the task to delete")
+
+	deleteCmd.Parse(os.Args[2:])
+
+	if *deleteId == 0 {
+		fmt.Println("id is required")
+		return
+	}
+
+	if err := store.RemoveTask(*deleteId); err != nil {
+		fmt.Printf("Error deleting task: %v\n", err)
+		return
+	}
+	fmt.Printf("Deleted task with ID: %d\n", *deleteId)
+}
+
+// Task definition
 type Task struct {
 	ID          int
 	Title       string
@@ -84,19 +112,20 @@ type Task struct {
 	Completed   bool
 }
 
-type inMemoryTaskStore struct {
+// InMemoryTaskStore definition
+type InMemoryTaskStore struct {
 	tasks map[int]Task
 	mutex sync.Mutex
 	idSeq int
 }
 
-func localTaskStore() *inMemoryTaskStore {
-	return &inMemoryTaskStore{
+func localTaskStore() *InMemoryTaskStore {
+	return &InMemoryTaskStore{
 		tasks: make(map[int]Task),
 	}
 }
 
-func (store *inMemoryTaskStore) AddTask(title string, description string) Task {
+func (store *InMemoryTaskStore) AddTask(title string, description string) Task {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 	store.idSeq++
@@ -110,7 +139,7 @@ func (store *inMemoryTaskStore) AddTask(title string, description string) Task {
 	return task
 }
 
-func (store *inMemoryTaskStore) RemoveTask(id int) error {
+func (store *InMemoryTaskStore) RemoveTask(id int) error {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 
@@ -122,7 +151,7 @@ func (store *inMemoryTaskStore) RemoveTask(id int) error {
 	return nil
 }
 
-func (store *inMemoryTaskStore) ListTasks() []Task {
+func (store *InMemoryTaskStore) ListTasks() []Task {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 
@@ -134,7 +163,8 @@ func (store *inMemoryTaskStore) ListTasks() []Task {
 
 	return taskList
 }
-func (store *inMemoryTaskStore) CompleteTask(id int) error {
+
+func (store *InMemoryTaskStore) CompleteTask(id int) error {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 
@@ -148,7 +178,8 @@ func (store *inMemoryTaskStore) CompleteTask(id int) error {
 	return nil
 }
 
-func (store *inMemoryTaskStore) handleTasks(w http.ResponseWriter, r *http.Request) {
+// HTTP Handlers
+func (store *InMemoryTaskStore) handleTasks(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		tasks := store.ListTasks()
@@ -175,7 +206,7 @@ func (store *inMemoryTaskStore) handleTasks(w http.ResponseWriter, r *http.Reque
 	}
 }
 
-func (store *inMemoryTaskStore) handleTasksById(w http.ResponseWriter, r *http.Request) {
+func (store *InMemoryTaskStore) handleTasksById(w http.ResponseWriter, r *http.Request) {
 	taskId := r.URL.Path[len("/tasks/"):]
 	id, err := strconv.Atoi(taskId)
 
