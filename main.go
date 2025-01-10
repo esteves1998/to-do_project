@@ -50,7 +50,10 @@ func handleAddCommand(store *InMemoryTaskStore) {
 	title := addCmd.String("title", "", "Title of the task")
 	desc := addCmd.String("description", "", "Description of the task")
 
-	addCmd.Parse(os.Args[2:])
+	if err := addCmd.Parse(os.Args[2:]); err != nil {
+		fmt.Printf("Error parsing args: %v\n", err)
+		os.Exit(1)
+	}
 
 	if *title == "" {
 		fmt.Println("title is required")
@@ -72,7 +75,10 @@ func handleCompleteCommand(store *InMemoryTaskStore) {
 	completeCmd := flag.NewFlagSet("complete", flag.ExitOnError)
 	completeId := completeCmd.Int("id", 0, "ID of the task to complete")
 
-	completeCmd.Parse(os.Args[2:])
+	if err := completeCmd.Parse(os.Args[2:]); err != nil {
+		fmt.Printf("Error parsing flags: %v\n", err)
+		return
+	}
 
 	if *completeId == 0 {
 		fmt.Println("id is required")
@@ -90,7 +96,10 @@ func handleDeleteCommand(store *InMemoryTaskStore) {
 	deleteCmd := flag.NewFlagSet("delete", flag.ExitOnError)
 	deleteId := deleteCmd.Int("id", 0, "ID of the task to delete")
 
-	deleteCmd.Parse(os.Args[2:])
+	if err := deleteCmd.Parse(os.Args[2:]); err != nil {
+		fmt.Printf("Error parsing flags: %v\n", err)
+		return
+	}
 
 	if *deleteId == 0 {
 		fmt.Println("id is required")
