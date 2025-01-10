@@ -1,70 +1,125 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
-	"strconv"
+	"os"
 	"strings"
 	"sync"
 )
 
+type Task struct {
+	ID          int    `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Completed   bool   `json:"completed"`
+}
+
+// Global task store
+var (
+	taskStore = localTaskStore()
+)
+
 func main() {
-	store := taskStore()
+	go startServer()
+	runCLI()
+}
 
-	http.HandleFunc("/tasks", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			tasks := store.ListTasks()
-			json.NewEncoder(w).Encode(tasks)
+func startServer() {
+	http.HandleFunc("/tasks", taskHandler)
+	fmt.Printf("Starting REST API server on http://localhost:8080\n> ")
+	if err := http.ListenAndServe(":8080", nil); err != nil {
+		fmt.Println("Error starting server:", err)
+		os.Exit(1)
+	}
+}
 
-		case http.MethodPost:
-			var task Task
-			if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
-				http.Error(w, "Invalid input", http.StatusBadRequest)
-				return
-			}
-			addedTask := store.AddTask(task.Title, task.Description)
-			json.NewEncoder(w).Encode(addedTask)
-
-		default:
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		}
-	})
-
-	http.HandleFunc("/tasks/", func(w http.ResponseWriter, r *http.Request) {
-		idStr := r.URL.Path[len("/tasks/"):]
-		id, err := strconv.Atoi(idStr)
-		if err != nil {
-			http.Error(w, "Invalid ID", http.StatusBadRequest)
+func taskHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		tasks := taskStore.ListTasks()
+		json.NewEncoder(w).Encode(tasks)
+	case http.MethodPost:
+		var task Task
+		if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
+			http.Error(w, "Invalid task data", http.StatusBadRequest)
 			return
 		}
-
-		switch r.Method {
-		case http.MethodPut:
-			if err := store.CompleteTask(id); err != nil {
-				http.Error(w, err.Error(), http.StatusNotFound)
-				return
-			}
-			fmt.Fprintf(w, "Task %d marked as completed", id)
-
-		case http.MethodDelete:
-			if err := store.RemoveTask(id); err != nil {
-				http.Error(w, err.Error(), http.StatusNotFound)
-				return
-			}
-			fmt.Fprintf(w, "Task %d deleted", id)
-
-		default:
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		newTask := taskStore.AddTask(task.Title, task.Description)
+		json.NewEncoder(w).Encode(newTask)
+	case http.MethodPut:
+		var task Task
+		if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
+			http.Error(w, "Invalid task data", http.StatusBadRequest)
+			return
 		}
-	})
-
-	fmt.Println("Starting server on :8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+		err := taskStore.CompleteTask(task.ID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	case http.MethodDelete:
+		var task Task
+		if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
+			http.Error(w, "Invalid task data", http.StatusBadRequest)
+			return
+		}
+		err := taskStore.RemoveTask(task.ID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
 }
+
+func runCLI() {
+	scanner := bufio.NewScanner(os.Stdin)
+	fmt.Println("Task Manager (connected to REST API)")
+	printHelp()
+
+	for {
+		fmt.Print("> ")
+		if !scanner.Scan() {
+			break
+		}
+
+		input := scanner.Text()
+		parts := strings.Fields(input)
+
+		if len(parts) == 0 {
+			continue
+		}
+
+		cmd := parts[0]
+		args := parts[1:]
+
+		switch cmd {
+		case "add":
+			handleAdd(args)
+		case "list":
+			handleList()
+		case "complete":
+			handleComplete(args)
+		case "delete":
+			handleDelete(args)
+		case "help":
+			printHelp()
+		case "exit":
+			fmt.Println("Exiting Task Manager.")
+			os.Exit(0)
+		default:
+			fmt.Println("Unknown command. Type 'help' for available commands.")
+		}
+	}
+}
+
 func printHelp() {
 	fmt.Println("Commands:")
 	fmt.Println("  add <title> <description>    Add a new task")
@@ -75,69 +130,120 @@ func printHelp() {
 	fmt.Println("  exit                         Exit the program")
 }
 
-func handleAdd(args []string, store *inMemoryTaskStore) {
+func handleAdd(args []string) {
 	if len(args) < 2 {
 		fmt.Println("Usage: add <title> <description>")
 		return
 	}
 	title := args[0]
 	description := strings.Join(args[1:], " ")
-	task := store.AddTask(title, description)
-	fmt.Printf("Added task: %+v\n", task)
+
+	task := Task{
+		Title:       title,
+		Description: description,
+	}
+	resp, err := http.Post("http://localhost:8080/tasks", "application/json", toJSON(task))
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusOK {
+		fmt.Println("Task added successfully.")
+	} else {
+		fmt.Println("Failed to add task.")
+	}
 }
 
-func handleList(_ []string, store *inMemoryTaskStore) {
-	tasks := store.ListTasks()
+func handleList() {
+	resp, err := http.Get("http://localhost:8080/tasks")
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	var tasks []Task
+	if err := json.NewDecoder(resp.Body).Decode(&tasks); err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+
 	if len(tasks) == 0 {
 		fmt.Println("No tasks available.")
 		return
 	}
+
 	for _, task := range tasks {
-		fmt.Printf("%+v\n", task)
+		fmt.Printf("ID: %d, Title: %s, Description: %s, Completed: %v\n",
+			task.ID, task.Title, task.Description, task.Completed)
 	}
 }
 
-func handleComplete(args []string, store *inMemoryTaskStore) {
+func handleComplete(args []string) {
 	if len(args) < 1 {
 		fmt.Println("Usage: complete <id>")
 		return
 	}
-	id, err := strconv.Atoi(args[0])
+
+	id := args[0]
+	url := fmt.Sprintf("http://localhost:8080/tasks/%s", id)
+
+	req, err := http.NewRequest(http.MethodPut, url, nil)
 	if err != nil {
-		fmt.Println("Invalid ID.")
+		fmt.Println("Error creating request:", err)
 		return
 	}
-	err = store.CompleteTask(id)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Println("Error:", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		fmt.Printf("Task %s marked as completed.\n", id)
 	} else {
-		fmt.Printf("Completed task: %d\n", id)
+		fmt.Printf("Failed to complete task %s: %s\n", id, resp.Status)
 	}
 }
 
-func handleDelete(args []string, store *inMemoryTaskStore) {
+func handleDelete(args []string) {
 	if len(args) < 1 {
 		fmt.Println("Usage: delete <id>")
 		return
 	}
-	id, err := strconv.Atoi(args[0])
+
+	id := args[0]
+	url := fmt.Sprintf("http://localhost:8080/tasks/%s", id)
+
+	req, err := http.NewRequest(http.MethodDelete, url, nil)
 	if err != nil {
-		fmt.Println("Invalid ID.")
+		fmt.Println("Error creating request:", err)
 		return
 	}
-	err = store.RemoveTask(id)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Println("Error:", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		fmt.Printf("Task %s deleted successfully.\n", id)
 	} else {
-		fmt.Printf("Deleted task: %d\n", id)
+		fmt.Printf("Failed to delete task %s: %s\n", id, resp.Status)
 	}
 }
 
-type Task struct {
-	ID          int    `json:"id"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	Completed   bool   `json:"completed"`
+func toJSON(task Task) *strings.Reader {
+	data, _ := json.Marshal(task)
+	return strings.NewReader(string(data))
 }
 
 type inMemoryTaskStore struct {
@@ -146,7 +252,7 @@ type inMemoryTaskStore struct {
 	idSeq int
 }
 
-func taskStore() *inMemoryTaskStore {
+func localTaskStore() *inMemoryTaskStore {
 	return &inMemoryTaskStore{
 		tasks: make(map[int]Task),
 	}
@@ -156,14 +262,12 @@ func (store *inMemoryTaskStore) AddTask(title string, description string) Task {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 	store.idSeq++
-
 	task := Task{
 		ID:          store.idSeq,
 		Title:       title,
 		Description: description,
 		Completed:   false,
 	}
-
 	store.tasks[task.ID] = task
 	return task
 }
