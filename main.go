@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -8,30 +9,53 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 )
 
 func main() {
 	store := localTaskStore()
-	go startHTTPServer(store)
 
-	if len(os.Args) < 2 {
-		fmt.Println("Usage: [add|list|complete|delete] [options]")
-		os.Exit(1)
+	if len(os.Args) > 1 && isCLICommand(os.Args[1]) {
+		handleCLICommand(store, os.Args[1:])
+		return
 	}
 
-	// CLI command processing
-	switch os.Args[1] {
-	case "add":
-		handleAddCommand(store)
-	case "list":
-		handleListCommand(store)
-	case "complete":
-		handleCompleteCommand(store)
-	case "delete":
-		handleDeleteCommand(store)
-	default:
-		fmt.Println("expected 'add', 'list', 'complete' or 'delete' subcommands")
+	go startHTTPServer(store)
+	fmt.Println("Server running on port 8080. Enter commands (add, list, complete, delete, or exit):")
+
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		fmt.Print("> ")
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			fmt.Printf("Error reading input: %v\n", err)
+			continue
+		}
+
+		input = strings.TrimSpace(input)
+		if input == "exit" {
+			fmt.Println("Exiting...")
+			break
+		}
+
+		args := strings.Fields(input)
+		if len(args) == 0 {
+			continue
+		}
+
+		switch args[0] {
+		case "add":
+			handleAddCommand(store, args[1:])
+		case "list":
+			handleListCommand(store)
+		case "complete":
+			handleCompleteCommand(store, args[1:])
+		case "delete":
+			handleDeleteCommand(store, args[1:])
+		default:
+			fmt.Println("Unknown command. Supported commands: add, list, complete, delete, exit")
+		}
 	}
 }
 
@@ -45,14 +69,37 @@ func startHTTPServer(store *InMemoryTaskStore) {
 	}
 }
 
-func handleAddCommand(store *InMemoryTaskStore) {
-	addCmd := flag.NewFlagSet("add", flag.ExitOnError)
+func isCLICommand(cmd string) bool {
+	switch cmd {
+	case "add", "list", "complete", "delete":
+		return true
+	}
+	return false
+}
+
+func handleCLICommand(store *InMemoryTaskStore, args []string) {
+	switch args[0] {
+	case "add":
+		handleAddCommand(store, args[1:])
+	case "list":
+		handleListCommand(store)
+	case "complete":
+		handleCompleteCommand(store, args[1:])
+	case "delete":
+		handleDeleteCommand(store, args[1:])
+	default:
+		fmt.Println("Unknown command. Supported commands: add, list, complete, delete")
+	}
+}
+
+func handleAddCommand(store *InMemoryTaskStore, args []string) {
+	addCmd := flag.NewFlagSet("add", flag.ContinueOnError)
 	title := addCmd.String("title", "", "Title of the task")
 	desc := addCmd.String("description", "", "Description of the task")
 
-	if err := addCmd.Parse(os.Args[2:]); err != nil {
+	if err := addCmd.Parse(args); err != nil {
 		fmt.Printf("Error parsing args: %v\n", err)
-		os.Exit(1)
+		return
 	}
 
 	if *title == "" {
@@ -71,11 +118,11 @@ func handleListCommand(store *InMemoryTaskStore) {
 	}
 }
 
-func handleCompleteCommand(store *InMemoryTaskStore) {
-	completeCmd := flag.NewFlagSet("complete", flag.ExitOnError)
+func handleCompleteCommand(store *InMemoryTaskStore, args []string) {
+	completeCmd := flag.NewFlagSet("complete", flag.ContinueOnError)
 	completeId := completeCmd.Int("id", 0, "ID of the task to complete")
 
-	if err := completeCmd.Parse(os.Args[2:]); err != nil {
+	if err := completeCmd.Parse(args); err != nil {
 		fmt.Printf("Error parsing flags: %v\n", err)
 		return
 	}
@@ -92,11 +139,11 @@ func handleCompleteCommand(store *InMemoryTaskStore) {
 	fmt.Printf("Completed task with ID: %d\n", *completeId)
 }
 
-func handleDeleteCommand(store *InMemoryTaskStore) {
-	deleteCmd := flag.NewFlagSet("delete", flag.ExitOnError)
+func handleDeleteCommand(store *InMemoryTaskStore, args []string) {
+	deleteCmd := flag.NewFlagSet("delete", flag.ContinueOnError)
 	deleteId := deleteCmd.Int("id", 0, "ID of the task to delete")
 
-	if err := deleteCmd.Parse(os.Args[2:]); err != nil {
+	if err := deleteCmd.Parse(args); err != nil {
 		fmt.Printf("Error parsing flags: %v\n", err)
 		return
 	}
