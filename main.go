@@ -1,37 +1,36 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
+	"strconv"
 	"sync"
 )
 
 func main() {
 	store := localTaskStore()
 
+	http.HandleFunc("/tasks", store.handleTasks)
+	http.HandleFunc("/tasks/", store.handleTasksById)
+
+	fmt.Println("Listening on :8080")
+	http.ListenAndServe(":8080", nil)
+
 	if len(os.Args) < 2 {
 		fmt.Println("Usage: [add|list|complete|delete] [options]")
 		os.Exit(1)
 	}
 
-	addCmd := flag.NewFlagSet("add", flag.ExitOnError)
-	title := addCmd.String("title", "", "Title of the task")
-	desc := addCmd.String("description", "", "Description of the task")
-
-	completeCmd := flag.NewFlagSet("complete", flag.ExitOnError)
-	completeId := completeCmd.Int("id", 0, "ID of the task to complete")
-
-	deleteCmd := flag.NewFlagSet("delete", flag.ExitOnError)
-	deleteId := deleteCmd.Int("id", 0, "ID of the task to delete")
-
-	if len(os.Args) < 1 {
-		fmt.Println("expected 'add', 'list', 'complete' or 'delete' subcommands")
-	}
-
 	switch os.Args[1] {
 	case "add":
+		addCmd := flag.NewFlagSet("add", flag.ExitOnError)
+		title := addCmd.String("title", "", "Title of the task")
+		desc := addCmd.String("description", "", "Description of the task")
+
 		addCmd.Parse(os.Args[2:])
 		if *title == "" {
 			fmt.Println("title is required")
@@ -47,6 +46,9 @@ func main() {
 		}
 
 	case "complete":
+		completeCmd := flag.NewFlagSet("complete", flag.ExitOnError)
+		completeId := completeCmd.Int("id", 0, "ID of the task to complete")
+
 		completeCmd.Parse(os.Args[2:])
 		if *completeId == 0 {
 			fmt.Println("id is required")
@@ -55,6 +57,9 @@ func main() {
 		fmt.Printf("Completed task: %+v\n", store.CompleteTask(*completeId))
 
 	case "delete":
+		deleteCmd := flag.NewFlagSet("delete", flag.ExitOnError)
+		deleteId := deleteCmd.Int("id", 0, "ID of the task to delete")
+
 		deleteCmd.Parse(os.Args[2:])
 		if *deleteId == 0 {
 			fmt.Println("id is required")
@@ -137,4 +142,49 @@ func (store *inMemoryTaskStore) CompleteTask(id int) error {
 	task.Completed = true
 	store.tasks[id] = task
 	return nil
+}
+
+func (store *inMemoryTaskStore) handleTasks(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		tasks := store.ListTasks()
+		json.NewEncoder(w).Encode(tasks)
+	case http.MethodPost:
+		task := &Task{}
+		if err := json.NewDecoder(r.Body).Decode(task); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		newTask := store.AddTask(task.Title, task.Description)
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(newTask)
+	default:
+		http.Error(w, "Only GET and POST methods are supported on this endpoint", http.StatusMethodNotAllowed)
+	}
+}
+
+func (store *inMemoryTaskStore) handleTasksById(w http.ResponseWriter, r *http.Request) {
+	taskId := r.URL.Path[len("/tasks/"):]
+	id, err := strconv.Atoi(taskId)
+
+	if err != nil {
+		http.Error(w, "Invalid task ID", http.StatusBadRequest)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodPatch:
+		if store.CompleteTask(id); err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	case http.MethodDelete:
+		if store.RemoveTask(id); err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		http.Error(w, "Only PATCH and DELETE methods are supported on this endpoint", http.StatusMethodNotAllowed)
+	}
 }
