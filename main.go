@@ -1,58 +1,70 @@
 package main
 
 import (
-	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
+	"log"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 )
 
 func main() {
-	store := localTaskStore()
-	scanner := bufio.NewScanner(os.Stdin)
+	store := taskStore()
 
-	fmt.Println("Task Manager")
-	printHelp()
+	http.HandleFunc("/tasks", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			tasks := store.ListTasks()
+			json.NewEncoder(w).Encode(tasks)
 
-	for {
-		fmt.Print("> ")
-		if !scanner.Scan() {
-			break
-		}
+		case http.MethodPost:
+			var task Task
+			if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
+				http.Error(w, "Invalid input", http.StatusBadRequest)
+				return
+			}
+			addedTask := store.AddTask(task.Title, task.Description)
+			json.NewEncoder(w).Encode(addedTask)
 
-		input := scanner.Text()
-		parts := strings.Fields(input)
-
-		if len(parts) == 0 {
-			continue
-		}
-
-		cmd := parts[0]
-		args := parts[1:]
-
-		switch cmd {
-		case "add":
-			handleAdd(args, store)
-		case "list":
-			handleList(args, store)
-		case "complete":
-			handleComplete(args, store)
-		case "delete":
-			handleDelete(args, store)
-		case "help":
-			printHelp()
-		case "exit":
-			fmt.Println("Exiting Task Manager.")
-			os.Exit(0)
 		default:
-			fmt.Println("Unknown command. Type 'help' for available commands.")
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
-	}
-}
+	})
 
+	http.HandleFunc("/tasks/", func(w http.ResponseWriter, r *http.Request) {
+		idStr := r.URL.Path[len("/tasks/"):]
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			http.Error(w, "Invalid ID", http.StatusBadRequest)
+			return
+		}
+
+		switch r.Method {
+		case http.MethodPut:
+			if err := store.CompleteTask(id); err != nil {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			fmt.Fprintf(w, "Task %d marked as completed", id)
+
+		case http.MethodDelete:
+			if err := store.RemoveTask(id); err != nil {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			fmt.Fprintf(w, "Task %d deleted", id)
+
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	fmt.Println("Starting server on :8080")
+	log.Fatal(http.ListenAndServe(":8080", nil))
+}
 func printHelp() {
 	fmt.Println("Commands:")
 	fmt.Println("  add <title> <description>    Add a new task")
@@ -122,10 +134,10 @@ func handleDelete(args []string, store *inMemoryTaskStore) {
 }
 
 type Task struct {
-	ID          int
-	Title       string
-	Description string
-	Completed   bool
+	ID          int    `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Completed   bool   `json:"completed"`
 }
 
 type inMemoryTaskStore struct {
@@ -134,7 +146,7 @@ type inMemoryTaskStore struct {
 	idSeq int
 }
 
-func localTaskStore() *inMemoryTaskStore {
+func taskStore() *inMemoryTaskStore {
 	return &inMemoryTaskStore{
 		tasks: make(map[int]Task),
 	}
@@ -144,12 +156,14 @@ func (store *inMemoryTaskStore) AddTask(title string, description string) Task {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 	store.idSeq++
+
 	task := Task{
 		ID:          store.idSeq,
 		Title:       title,
 		Description: description,
 		Completed:   false,
 	}
+
 	store.tasks[task.ID] = task
 	return task
 }
