@@ -42,7 +42,10 @@ func taskHandler(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		tasks := taskStore.ListTasks()
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(tasks)
+		if err := json.NewEncoder(w).Encode(tasks); err != nil {
+			http.Error(w, "Failed to encode tasks", http.StatusInternalServerError)
+			return
+		}
 	case http.MethodPost:
 		var task Task
 		if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
@@ -51,7 +54,10 @@ func taskHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		newTask := taskStore.AddTask(task.Title, task.Description)
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(newTask)
+		if err := json.NewEncoder(w).Encode(newTask); err != nil {
+			http.Error(w, "Failed to encode new task", http.StatusInternalServerError)
+			return
+		}
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -85,7 +91,10 @@ func singleTaskHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
-		json.NewEncoder(w).Encode(task)
+		if err := json.NewEncoder(w).Encode(task); err != nil {
+			http.Error(w, "Failed to encode task", http.StatusInternalServerError)
+			return
+		}
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
