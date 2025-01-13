@@ -2,9 +2,11 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"github.com/google/uuid"
 	"io"
@@ -23,12 +25,36 @@ type Task struct {
 	Completed   bool   `json:"completed"`
 }
 
+type TaskStore interface {
+	AddTask(title, description string) Task
+	RemoveTask(id int) error
+	ListTasks() ([]Task, error)
+	GetTask(id int) (*Task, error)
+	CompleteTask(id int) error
+}
+
 const traceIDKey = "TraceID"
 
-var taskStore = localTaskStore()
+var taskStore TaskStore
 var logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 func main() {
+	// Command-line argument to choose the task store type.
+	storeType := flag.String("store", "memory", "Specify the task store: 'memory' or 'json'")
+	flag.Parse()
+
+	// Initialize the task store based on the provided type.
+	switch *storeType {
+	case "json":
+		taskStore = newJSONTaskStore("tasks.json")
+	case "memory":
+		taskStore = localMemoryStore()
+	default:
+		fmt.Println("Invalid store type. Use 'memory' or 'json'.")
+		os.Exit(1)
+	}
+
+	// Start the server and CLI concurrently.
 	go startServer()
 	runCLI()
 }
@@ -64,89 +90,119 @@ func taskHandler(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		logger.Info("Listing tasks", "traceID", traceID)
-		tasks := taskStore.ListTasks()
-		w.WriteHeader(http.StatusOK)
-		if err := json.NewEncoder(w).Encode(tasks); err != nil {
-			logger.Error("Failed to encode tasks", "error", err, "traceID", traceID)
-			http.Error(w, "Failed to encode tasks", http.StatusInternalServerError)
-			return
-		}
-
+		handleListTasks(w, traceID)
 	case http.MethodPost:
-		logger.Info("Creating task", "traceID", traceID)
-		var task Task
-		if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
-			logger.Error("Invalid task data", "error", err, "traceID", traceID)
-			http.Error(w, "Invalid task data", http.StatusBadRequest)
-			return
-		}
-		newTask := taskStore.AddTask(task.Title, task.Description)
-		logger.Info("Added task", "traceID", traceID, "taskID", newTask.ID)
-		w.WriteHeader(http.StatusCreated)
-		if err := json.NewEncoder(w).Encode(newTask); err != nil {
-			logger.Error("Failed to encode new task", "error", err, "traceID", traceID)
-			http.Error(w, "Failed to encode new task", http.StatusInternalServerError)
-			return
-		}
-
+		handleCreateTask(w, r, traceID)
 	default:
 		logger.Error("Method not allowed", "method", r.Method, "traceID", traceID)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
+func handleListTasks(w http.ResponseWriter, traceID string) {
+	logger.Info("Listing tasks", "traceID", traceID)
+	tasks, err := taskStore.ListTasks()
+	if err != nil {
+		logger.Error("Failed to list tasks", "error", err, "traceID", traceID)
+		http.Error(w, "Failed to retrieve tasks", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSONResponse(w, tasks, http.StatusOK, traceID, "tasks")
+}
+
+func handleCreateTask(w http.ResponseWriter, r *http.Request, traceID string) {
+	logger.Info("Creating task", "traceID", traceID)
+	var task Task
+	if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
+		logger.Error("Invalid task data", "error", err, "traceID", traceID)
+		http.Error(w, "Invalid task data", http.StatusBadRequest)
+		return
+	}
+
+	newTask := taskStore.AddTask(task.Title, task.Description)
+	logger.Info("Added task", "traceID", traceID, "taskID", newTask.ID)
+
+	writeJSONResponse(w, newTask, http.StatusCreated, traceID, "new task")
+}
+
+func writeJSONResponse(w http.ResponseWriter, data interface{}, statusCode int, traceID, dataDescription string) {
+	var buffer bytes.Buffer
+	if err := json.NewEncoder(&buffer).Encode(data); err != nil {
+		logger.Error("Failed to encode "+dataDescription, "error", err, "traceID", traceID)
+		http.Error(w, "Failed to encode "+dataDescription, http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(statusCode)
+	if _, err := w.Write(buffer.Bytes()); err != nil {
+		logger.Error("Failed to write response", "error", err, "traceID", traceID)
+	}
+}
+
 func singleTaskHandler(w http.ResponseWriter, r *http.Request) {
 	traceID := r.Context().Value(traceIDKey).(string)
-	idStr := strings.TrimPrefix(r.URL.Path, "/tasks/")
-
-	id, err := strconv.Atoi(idStr)
-	if err != nil || id <= 0 {
-		logger.Error("Invalid task id", "id", id, "traceID", traceID)
+	id, err := parseTaskID(r.URL.Path)
+	if err != nil {
+		logger.Error("Invalid task ID", "traceID", traceID, "error", err)
 		http.Error(w, "Invalid task ID", http.StatusBadRequest)
 		return
 	}
 
 	switch r.Method {
-	case http.MethodPut:
-		logger.Info("Updating task", "traceID", traceID)
-		if err := taskStore.CompleteTask(id); err != nil {
-			logger.Error("Failed to update task", "traceID", traceID, "error", err)
-			http.Error(w, err.Error(), http.StatusNotFound)
-			return
-		}
-		logger.Info("Updated task", "traceID", traceID, "taskID", id)
-		w.WriteHeader(http.StatusOK)
-
-	case http.MethodDelete:
-		logger.Info("Deleting task", "traceID", traceID)
-		if err := taskStore.RemoveTask(id); err != nil {
-			logger.Error("Failed to delete task", "traceID", traceID, "error", err)
-			http.Error(w, err.Error(), http.StatusNotFound)
-			return
-		}
-		logger.Info("Deleted task", "traceID", traceID)
-		w.WriteHeader(http.StatusOK)
-
 	case http.MethodGet:
-		logger.Info("Getting task", "traceID", traceID)
-		task, err := taskStore.GetTask(id)
-		if err != nil {
-			logger.Error("Task not found", "traceID", traceID, "error", err)
-			http.Error(w, err.Error(), http.StatusNotFound)
-			return
-		}
-		if err := json.NewEncoder(w).Encode(task); err != nil {
-			logger.Error("Failed to encode task", "traceID", traceID, "error", err)
-			http.Error(w, "Failed to encode task", http.StatusInternalServerError)
-			return
-		}
-		logger.Info("Retrieved task successfully", "traceID", traceID, "taskID", task.ID)
-
+		handleTaskRetrieval(w, id, traceID)
+	case http.MethodPut:
+		handleTaskUpdate(w, id, traceID)
+	case http.MethodDelete:
+		handleTaskDeletion(w, id, traceID)
 	default:
 		logger.Error("Method not allowed", "method", r.Method, "traceID", traceID)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func parseTaskID(path string) (int, error) {
+	idStr := strings.TrimPrefix(path, "/tasks/")
+	id, err := strconv.Atoi(idStr)
+	if err != nil || id <= 0 {
+		return 0, fmt.Errorf("invalid task ID")
+	}
+	return id, nil
+}
+
+func handleTaskRetrieval(w http.ResponseWriter, id int, traceID string) {
+	task, err := taskStore.GetTask(id)
+	if err != nil {
+		logger.Error("Task not found", "traceID", traceID, "error", err)
+		http.Error(w, "Task not found", http.StatusNotFound)
+		return
+	}
+
+	writeJSONResponse(w, task, http.StatusOK, traceID, "task")
+}
+
+func handleTaskUpdate(w http.ResponseWriter, id int, traceID string) {
+	err := taskStore.CompleteTask(id)
+	if err != nil {
+		logger.Error("Failed to complete task", "traceID", traceID, "error", err)
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	logger.Info("Task completed", "traceID", traceID, "taskID", id)
+	w.WriteHeader(http.StatusOK)
+}
+
+func handleTaskDeletion(w http.ResponseWriter, id int, traceID string) {
+	logger.Info("Deleting task", "traceID", traceID, "taskID", id)
+	if err := taskStore.RemoveTask(id); err != nil {
+		logger.Error("Failed to delete task", "traceID", traceID, "taskID", id, "error", err)
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	logger.Info("Task deleted successfully", "traceID", traceID, "taskID", id)
+	w.WriteHeader(http.StatusOK)
 }
 
 func runCLI() {
@@ -362,13 +418,14 @@ type inMemoryTaskStore struct {
 	idSeq int
 }
 
-func localTaskStore() *inMemoryTaskStore {
+func localMemoryStore() *inMemoryTaskStore {
 	return &inMemoryTaskStore{
 		tasks: make(map[int]Task),
+		idSeq: 0,
 	}
 }
 
-func (store *inMemoryTaskStore) AddTask(title string, description string) Task {
+func (store *inMemoryTaskStore) AddTask(title, description string) Task {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 	store.idSeq++
@@ -394,7 +451,7 @@ func (store *inMemoryTaskStore) RemoveTask(id int) error {
 	return nil
 }
 
-func (store *inMemoryTaskStore) ListTasks() []Task {
+func (store *inMemoryTaskStore) ListTasks() ([]Task, error) {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 
@@ -404,18 +461,18 @@ func (store *inMemoryTaskStore) ListTasks() []Task {
 		taskList = append(taskList, task)
 	}
 
-	return taskList
+	return taskList, nil
 }
 
-func (store *inMemoryTaskStore) GetTask(id int) (Task, error) {
+func (store *inMemoryTaskStore) GetTask(id int) (*Task, error) {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 
 	task, exists := store.tasks[id]
 	if !exists {
-		return Task{}, errors.New("task not found")
+		return nil, errors.New("task not found")
 	}
-	return task, nil
+	return &task, nil
 }
 
 func (store *inMemoryTaskStore) CompleteTask(id int) error {
@@ -430,4 +487,132 @@ func (store *inMemoryTaskStore) CompleteTask(id int) error {
 	task.Completed = true
 	store.tasks[id] = task
 	return nil
+}
+
+type jsonTaskStore struct {
+	filePath string
+	mutex    sync.Mutex
+	tasks    map[int]Task
+	idSeq    int
+}
+
+func newJSONTaskStore(filePath string) *jsonTaskStore {
+	store := &jsonTaskStore{
+		filePath: filePath,
+		tasks:    make(map[int]Task),
+		idSeq:    0,
+	}
+
+	if err := store.load(); err != nil {
+		fmt.Println("Error loading tasks from file:", err)
+	}
+	return store
+}
+
+func (store *jsonTaskStore) load() error {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+
+	file, err := os.Open(store.filePath)
+	if os.IsNotExist(err) {
+		return nil // No file exists yet, nothing to load
+	} else if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	var tasks []Task
+	if err := json.NewDecoder(file).Decode(&tasks); err != nil {
+		return err
+	}
+
+	for _, task := range tasks {
+		store.tasks[task.ID] = task
+		if task.ID > store.idSeq {
+			store.idSeq = task.ID
+		}
+	}
+	return nil
+}
+
+func (store *jsonTaskStore) save() error {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+
+	file, err := os.Create(store.filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	tasks := make([]Task, 0, len(store.tasks))
+	for _, task := range store.tasks {
+		tasks = append(tasks, task)
+	}
+
+	return json.NewEncoder(file).Encode(tasks)
+}
+
+func (store *jsonTaskStore) AddTask(title, description string) Task {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+
+	store.idSeq++
+	task := Task{
+		ID:          store.idSeq,
+		Title:       title,
+		Description: description,
+		Completed:   false,
+	}
+	store.tasks[task.ID] = task
+	_ = store.save() // Save changes to the file
+	return task
+}
+
+func (store *jsonTaskStore) RemoveTask(id int) error {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+
+	if _, exists := store.tasks[id]; !exists {
+		return errors.New("task not found")
+	}
+
+	delete(store.tasks, id)
+	return store.save()
+}
+
+func (store *jsonTaskStore) ListTasks() ([]Task, error) {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+
+	tasks := make([]Task, 0, len(store.tasks))
+	for _, task := range store.tasks {
+		tasks = append(tasks, task)
+	}
+	return tasks, nil
+}
+
+func (store *jsonTaskStore) GetTask(id int) (*Task, error) {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+
+	task, exists := store.tasks[id]
+	if !exists {
+		return nil, errors.New("task not found")
+	}
+	return &task, nil
+}
+
+func (store *jsonTaskStore) CompleteTask(id int) error {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+
+	task, exists := store.tasks[id]
+	if !exists {
+		return errors.New("task not found")
+	}
+
+	task.Completed = true
+	store.tasks[id] = task
+	return store.save()
 }
