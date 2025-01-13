@@ -2,10 +2,13 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/google/uuid"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -20,7 +23,10 @@ type Task struct {
 	Completed   bool   `json:"completed"`
 }
 
+const traceIDKey = "TraceID"
+
 var taskStore = localTaskStore()
+var logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 func main() {
 	go startServer()
@@ -28,74 +34,117 @@ func main() {
 }
 
 func startServer() {
-	http.HandleFunc("/tasks", taskHandler)
-	http.HandleFunc("/tasks/", singleTaskHandler) // For operations that require a task ID
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/tasks", taskHandler)
+	mux.HandleFunc("/tasks/", singleTaskHandler) // For operations that require a task ID
+
+	loggedMux := TraceMiddleware(mux)
+
 	fmt.Printf("Starting REST API server on http://localhost:8080\n> ")
-	if err := http.ListenAndServe(":8080", nil); err != nil {
+	if err := http.ListenAndServe(":8080", loggedMux); err != nil {
 		fmt.Println("Error starting server:", err)
 		os.Exit(1)
 	}
 }
 
+func TraceMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		traceID := uuid.NewString()
+		ctx := context.WithValue(r.Context(), traceIDKey, traceID)
+		r = r.WithContext(ctx)
+
+		logger.Info("Request received", "method", r.Method, "url", r.URL.String(), "traceID", traceID)
+		next.ServeHTTP(w, r)
+	})
+}
+
 func taskHandler(w http.ResponseWriter, r *http.Request) {
+	traceID := r.Context().Value(traceIDKey).(string)
+
 	switch r.Method {
 	case http.MethodGet:
+		logger.Info("Listing tasks", "traceID", traceID)
 		tasks := taskStore.ListTasks()
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(tasks); err != nil {
+			logger.Error("Failed to encode tasks", "error", err, "traceID", traceID)
 			http.Error(w, "Failed to encode tasks", http.StatusInternalServerError)
 			return
 		}
+
 	case http.MethodPost:
+		logger.Info("Creating task", "traceID", traceID)
 		var task Task
 		if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
+			logger.Error("Invalid task data", "error", err, "traceID", traceID)
 			http.Error(w, "Invalid task data", http.StatusBadRequest)
 			return
 		}
 		newTask := taskStore.AddTask(task.Title, task.Description)
+		logger.Info("Added task", "traceID", traceID, "taskID", newTask.ID)
 		w.WriteHeader(http.StatusCreated)
 		if err := json.NewEncoder(w).Encode(newTask); err != nil {
+			logger.Error("Failed to encode new task", "error", err, "traceID", traceID)
 			http.Error(w, "Failed to encode new task", http.StatusInternalServerError)
 			return
 		}
+
 	default:
+		logger.Error("Method not allowed", "method", r.Method, "traceID", traceID)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
 func singleTaskHandler(w http.ResponseWriter, r *http.Request) {
-	idStr := strings.TrimPrefix(r.URL.Path, "tasks/")
+	traceID := r.Context().Value(traceIDKey).(string)
+	idStr := strings.TrimPrefix(r.URL.Path, "/tasks/")
 
 	id, err := strconv.Atoi(idStr)
 	if err != nil || id <= 0 {
+		logger.Error("Invalid task id", "id", id, "traceID", traceID)
 		http.Error(w, "Invalid task ID", http.StatusBadRequest)
 		return
 	}
 
 	switch r.Method {
 	case http.MethodPut:
+		logger.Info("Updating task", "traceID", traceID)
 		if err := taskStore.CompleteTask(id); err != nil {
+			logger.Error("Failed to update task", "traceID", traceID, "error", err)
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
+		logger.Info("Updated task", "traceID", traceID, "taskID", id)
 		w.WriteHeader(http.StatusOK)
+
 	case http.MethodDelete:
+		logger.Info("Deleting task", "traceID", traceID)
 		if err := taskStore.RemoveTask(id); err != nil {
+			logger.Error("Failed to delete task", "traceID", traceID, "error", err)
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
+		logger.Info("Deleted task", "traceID", traceID)
 		w.WriteHeader(http.StatusOK)
+
 	case http.MethodGet:
+		logger.Info("Getting task", "traceID", traceID)
 		task, err := taskStore.GetTask(id)
 		if err != nil {
+			logger.Error("Task not found", "traceID", traceID, "error", err)
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
 		if err := json.NewEncoder(w).Encode(task); err != nil {
+			logger.Error("Failed to encode task", "traceID", traceID, "error", err)
 			http.Error(w, "Failed to encode task", http.StatusInternalServerError)
 			return
 		}
+		logger.Info("Retrieved task successfully", "traceID", traceID, "taskID", task.ID)
+
 	default:
+		logger.Error("Method not allowed", "method", r.Method, "traceID", traceID)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
@@ -208,25 +257,31 @@ func handleList() {
 func handleGetTaskByID(args []string) {
 	if len(args) != 1 {
 		fmt.Println("Usage: get <id>")
+		return
 	}
+
 	id := args[0]
 	url := fmt.Sprintf("http://localhost:8080/tasks/%s", id)
+
 	resp, err := http.Get(url)
 	if err != nil {
 		fmt.Println("Error:", err)
 		return
 	}
 	defer safeClose(resp.Body)
-	if resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusOK {
+
+	if resp.StatusCode == http.StatusOK {
 		var task Task
 		if err := json.NewDecoder(resp.Body).Decode(&task); err != nil {
-			fmt.Println("Error:", err)
+			fmt.Println("Error decoding response:", err)
 			return
 		}
 		fmt.Printf("ID: %d, Title: %s, Description: %s, Completed: %v\n",
 			task.ID, task.Title, task.Description, task.Completed)
-	} else {
+	} else if resp.StatusCode == http.StatusNotFound {
 		fmt.Printf("Task with ID %s not found.\n", id)
+	} else {
+		fmt.Printf("Unexpected error: %s\n", resp.Status)
 	}
 }
 
