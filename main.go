@@ -494,6 +494,18 @@ func createEmptyJSONFile(filePath string) error {
 	return err
 }
 
+func (store *jsonTaskStore) saveToFile() error {
+	file, err := os.Create(store.filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(store.tasks)
+}
+
 func (store *jsonTaskStore) AddTask(title string, description string) Task {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
@@ -515,27 +527,24 @@ func (store *jsonTaskStore) AddTask(title string, description string) Task {
 	return task
 }
 
-func (store *jsonTaskStore) saveToFile() error {
-	file, err := os.Create(store.filePath)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(store.tasks)
-}
-
 func (store *jsonTaskStore) RemoveTask(id int) error {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 
-	if _, ok := store.tasks[id]; !ok {
+	if _, exists := store.tasks[id]; !exists {
+		logger.Error("Task not found for deletion", "taskID", id)
 		return errors.New("task not found")
 	}
 
 	delete(store.tasks, id)
+
+	// Save the updated tasks to the JSON file
+	if err := store.saveToFile(); err != nil {
+		logger.Error("Error saving to file after deletion", "error", err)
+		return err
+	}
+
+	logger.Info("Task deleted and file updated", "taskID", id)
 	return nil
 }
 
