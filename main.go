@@ -475,10 +475,18 @@ func newJSONTaskStore(filePath string) *jsonTaskStore {
 	}
 
 	// Initialize the task store
-	return &jsonTaskStore{
+	store := &jsonTaskStore{
 		filePath: filePath,
 		tasks:    make(map[int]Task),
 	}
+
+	// Load tasks from the file during initialization
+	if err := store.loadFromFile(); err != nil {
+		fmt.Println("Error loading tasks from file:", err)
+		os.Exit(1)
+	}
+
+	return store
 }
 
 func createEmptyJSONFile(filePath string) error {
@@ -487,11 +495,50 @@ func createEmptyJSONFile(filePath string) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func(file *os.File) {
+		err := file.Close()
+		if err != nil {
+			fmt.Println("Error closing file:", err)
+		}
+	}(file)
 
 	// Write an empty JSON array to the file
 	_, err = file.WriteString("[]")
 	return err
+}
+
+func (store *jsonTaskStore) loadFromFile() error {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+
+	file, err := os.Open(store.filePath)
+	if err != nil {
+		return err
+	}
+	defer func(file *os.File) {
+		err := file.Close()
+		if err != nil {
+			fmt.Println("Error closing JSON file:", err)
+		}
+	}(file)
+
+	tasks := make(map[int]Task) // Match the type used in saveToFile
+	if err := json.NewDecoder(file).Decode(&tasks); err != nil {
+		return err
+	}
+
+	store.tasks = tasks
+
+	// Determine the highest ID to update the sequence
+	highestID := 0
+	for id := range tasks {
+		if id > highestID {
+			highestID = id
+		}
+	}
+	store.idSeq = highestID
+
+	return nil
 }
 
 func (store *jsonTaskStore) saveToFile() error {
@@ -499,7 +546,12 @@ func (store *jsonTaskStore) saveToFile() error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func(file *os.File) {
+		err := file.Close()
+		if err != nil {
+			fmt.Println("Error closing JSON file:", err)
+		}
+	}(file)
 
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "  ")
