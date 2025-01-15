@@ -91,33 +91,21 @@ func taskHandler(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		logger.Info("Listing tasks", "traceID", traceID)
 		tasks := taskStore.ListTasks()
-		w.WriteHeader(http.StatusOK)
-		if err := json.NewEncoder(w).Encode(tasks); err != nil {
-			logger.Error("Failed to encode tasks", "error", err, "traceID", traceID)
-			http.Error(w, "Failed to encode tasks", http.StatusInternalServerError)
-			return
-		}
+		writeJSONResponse(w, http.StatusOK, tasks)
 
 	case http.MethodPost:
 		logger.Info("Creating task", "traceID", traceID)
 		var task Task
-		if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
-			logger.Error("Invalid task data", "error", err, "traceID", traceID)
-			http.Error(w, "Invalid task data", http.StatusBadRequest)
+		if !parseJSONRequest(w, r, &task) {
 			return
 		}
 		newTask := taskStore.AddTask(task.Title, task.Description)
 		logger.Info("Added task", "traceID", traceID, "taskID", newTask.ID)
-		w.WriteHeader(http.StatusCreated)
-		if err := json.NewEncoder(w).Encode(newTask); err != nil {
-			logger.Error("Failed to encode new task", "error", err, "traceID", traceID)
-			http.Error(w, "Failed to encode new task", http.StatusInternalServerError)
-			return
-		}
+		writeJSONResponse(w, http.StatusCreated, newTask)
 
 	default:
-		logger.Error("Method not allowed", "method", r.Method, "traceID", traceID)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		logger.Error("Unsupported method", "method", r.Method, "traceID", traceID)
 	}
 }
 
@@ -133,50 +121,71 @@ func singleTaskHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch r.Method {
-	case http.MethodPut:
-		logger.Info("Updating task", "traceID", traceID)
-		if err := taskStore.CompleteTask(id); err != nil {
-			logger.Error("Failed to update task", "traceID", traceID, "error", err)
-			http.Error(w, err.Error(), http.StatusNotFound)
-			return
-		}
-		logger.Info("Updated task", "traceID", traceID, "taskID", id)
-		w.WriteHeader(http.StatusOK)
-
-	case http.MethodDelete:
-		logger.Info("Deleting task", "traceID", traceID)
-		if err := taskStore.RemoveTask(id); err != nil {
-			logger.Error("Failed to delete task", "traceID", traceID, "error", err)
-			http.Error(w, err.Error(), http.StatusNotFound)
-			return
-		}
-		logger.Info("Deleted task", "traceID", traceID)
-		w.WriteHeader(http.StatusOK)
-
-	case http.MethodGet:
-		logger.Info("Getting task", "traceID", traceID)
+	case http.MethodGet: // Fetch a single task
+		logger.Info("Fetching task", "taskID", id, "traceID", traceID)
 		task, err := taskStore.GetTask(id)
 		if err != nil {
-			logger.Error("Task not found", "traceID", traceID, "error", err)
+			logger.Error("Task not found", "taskID", id, "traceID", traceID)
+			http.Error(w, "Task not found", http.StatusNotFound)
+			return
+		}
+		writeJSONResponse(w, http.StatusOK, task)
+
+	case http.MethodPut: // Update a task (mark as complete)
+		logger.Info("Completing task", "taskID", id, "traceID", traceID)
+		if err := taskStore.CompleteTask(id); err != nil {
+			logger.Error("Failed to complete task", "taskID", id, "traceID", traceID, "error", err)
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
-		if err := json.NewEncoder(w).Encode(task); err != nil {
-			logger.Error("Failed to encode task", "traceID", traceID, "error", err)
-			http.Error(w, "Failed to encode task", http.StatusInternalServerError)
+		w.WriteHeader(http.StatusOK)
+
+	case http.MethodDelete: // Delete a task
+		logger.Info("Deleting task", "taskID", id, "traceID", traceID)
+		if err := taskStore.RemoveTask(id); err != nil {
+			logger.Error("Failed to delete task", "taskID", id, "traceID", traceID, "error", err)
+			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
-		logger.Info("Retrieved task successfully", "traceID", traceID, "taskID", task.ID)
+		w.WriteHeader(http.StatusOK)
 
 	default:
-		logger.Error("Method not allowed", "method", r.Method, "traceID", traceID)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		logger.Error("Unsupported method", "method", r.Method, "traceID", traceID)
 	}
+}
+
+func writeJSONResponse(w http.ResponseWriter, statusCode int, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	if err := json.NewEncoder(w).Encode(data); err != nil {
+		logger.Error("Failed to encode JSON response", "error", err)
+		http.Error(w, "Failed to encode JSON response", http.StatusInternalServerError)
+	}
+}
+
+func parseJSONRequest(w http.ResponseWriter, r *http.Request, v interface{}) bool {
+	if r.Body == nil {
+		http.Error(w, "Request body is empty", http.StatusBadRequest)
+		return false
+	}
+	defer func(Body io.ReadCloser) {
+		if err := Body.Close(); err != nil {
+			logger.Error("Failed to close request body", "error", err)
+		}
+	}(r.Body)
+
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		logger.Error("Failed to decode JSON request", "error", err)
+		http.Error(w, "Invalid JSON request", http.StatusBadRequest)
+		return false
+	}
+	return true
 }
 
 func runCLI() {
 	scanner := bufio.NewScanner(os.Stdin)
-	fmt.Println("Task Manager (connected to REST API)")
+	logger.Info("Task Manager started (connected to REST API)")
 	printHelp()
 
 	for {
@@ -230,6 +239,7 @@ func printHelp() {
 
 func handleAdd(args []string) {
 	if len(args) < 2 {
+		logger.Info("Usage: add <title> <description>", "args", args)
 		fmt.Println("Usage: add <title> <description>")
 		return
 	}
@@ -242,38 +252,39 @@ func handleAdd(args []string) {
 	}
 	resp, err := http.Post("http://localhost:8080/tasks", "application/json", toJSON(task))
 	if err != nil {
-		fmt.Println("Error:", err)
+		logger.Error("Failed to add task", "taskID", task.ID, "error", err)
 		return
 	}
 	defer safeClose(resp.Body)
 
 	if resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusOK {
-		fmt.Println("Task added successfully.")
+		logger.Info("Task added successfully", "taskID", task.ID)
 	} else {
-		fmt.Println("Failed to add task.")
+		logger.Error("Failed to add task", "error", err)
 	}
 }
 
 func handleList() {
 	resp, err := http.Get("http://localhost:8080/tasks")
 	if err != nil {
-		fmt.Println("Error:", err)
+		logger.Error("Failed to list tasks", "error", err)
 		return
 	}
 	defer safeClose(resp.Body)
 
 	var tasks []Task
 	if err := json.NewDecoder(resp.Body).Decode(&tasks); err != nil {
-		fmt.Println("Error:", err)
+		logger.Error("Failed to list tasks", "error", err)
 		return
 	}
 
 	if len(tasks) == 0 {
-		fmt.Println("No tasks available.")
+		logger.Info("No tasks found")
 		return
 	}
 
 	for _, task := range tasks {
+		logger.Info("Task added successfully", "taskID", task.ID)
 		fmt.Printf("ID: %d, Title: %s, Description: %s, Completed: %v\n",
 			task.ID, task.Title, task.Description, task.Completed)
 	}
@@ -281,6 +292,7 @@ func handleList() {
 
 func handleGetTaskByID(args []string) {
 	if len(args) != 1 {
+		logger.Info("Usage: get <id>")
 		fmt.Println("Usage: get <id>")
 		return
 	}
@@ -290,7 +302,7 @@ func handleGetTaskByID(args []string) {
 
 	resp, err := http.Get(url)
 	if err != nil {
-		fmt.Println("Error:", err)
+		logger.Error("Failed to get task", "id", id, "error", err)
 		return
 	}
 	defer safeClose(resp.Body)
@@ -298,7 +310,7 @@ func handleGetTaskByID(args []string) {
 	if resp.StatusCode == http.StatusOK {
 		var task Task
 		if err := json.NewDecoder(resp.Body).Decode(&task); err != nil {
-			fmt.Println("Error decoding response:", err)
+			logger.Error("Error decoding response:", "error", err)
 			return
 		}
 		fmt.Printf("ID: %d, Title: %s, Description: %s, Completed: %v\n",
@@ -312,6 +324,7 @@ func handleGetTaskByID(args []string) {
 
 func handleComplete(args []string) {
 	if len(args) < 1 {
+		logger.Info("Usage: complete <id>")
 		fmt.Println("Usage: complete <id>")
 		return
 	}
@@ -321,27 +334,30 @@ func handleComplete(args []string) {
 
 	req, err := http.NewRequest(http.MethodPut, url, nil)
 	if err != nil {
-		fmt.Println("Error creating request:", err)
+		logger.Error("Error creating request:", "error", err)
 		return
 	}
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Println("Error:", err)
+		logger.Error("Failed to complete task", "id", id, "error", err)
 		return
 	}
 	defer safeClose(resp.Body)
 
 	if resp.StatusCode == http.StatusOK {
+		logger.Info("Task completed successfully", "id", id)
 		fmt.Printf("Task %s marked as completed.\n", id)
 	} else {
+		logger.Error("Failed to complete task", "id", id, "error", resp.Status)
 		fmt.Printf("Failed to complete task %s: %s\n", id, resp.Status)
 	}
 }
 
 func handleDelete(args []string) {
 	if len(args) < 1 {
+		logger.Info("Usage: delete <id>")
 		fmt.Println("Usage: delete <id>")
 		return
 	}
@@ -351,14 +367,14 @@ func handleDelete(args []string) {
 
 	req, err := http.NewRequest(http.MethodDelete, url, nil)
 	if err != nil {
-		fmt.Println("Error creating request:", err)
+		logger.Error("Error creating request:", "error", err)
 		return
 	}
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Println("Error:", err)
+		logger.Error("Failed to delete task", "id", id, "error", err)
 		return
 	}
 	defer safeClose(resp.Body)
@@ -372,7 +388,7 @@ func handleDelete(args []string) {
 
 func safeClose(c io.Closer) {
 	if err := c.Close(); err != nil {
-		fmt.Println("Error closing resource:", err)
+		logger.Error("Error closing connection:", "error", err)
 	}
 }
 
@@ -469,7 +485,7 @@ func newJSONTaskStore(filePath string) *jsonTaskStore {
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
 		// Create an empty file if it doesn't exist
 		if err := createEmptyJSONFile(filePath); err != nil {
-			fmt.Println("Error creating JSON file:", err)
+			logger.Error("Failed to create empty JSON file", "error", err)
 			os.Exit(1)
 		}
 	}
@@ -482,7 +498,7 @@ func newJSONTaskStore(filePath string) *jsonTaskStore {
 
 	// Load tasks from the file during initialization
 	if err := store.loadFromFile(); err != nil {
-		fmt.Println("Error loading tasks from file:", err)
+		logger.Error("Failed to load JSON file", "error", err)
 		os.Exit(1)
 	}
 
@@ -498,7 +514,7 @@ func createEmptyJSONFile(filePath string) error {
 	defer func(file *os.File) {
 		err := file.Close()
 		if err != nil {
-			fmt.Println("Error closing file:", err)
+			logger.Error("Error closing file:", "error", err)
 		}
 	}(file)
 
@@ -518,7 +534,7 @@ func (store *jsonTaskStore) loadFromFile() error {
 	defer func(file *os.File) {
 		err := file.Close()
 		if err != nil {
-			fmt.Println("Error closing JSON file:", err)
+			logger.Error("Error closing file:", "error", err)
 		}
 	}(file)
 
@@ -549,7 +565,7 @@ func (store *jsonTaskStore) saveToFile() error {
 	defer func(file *os.File) {
 		err := file.Close()
 		if err != nil {
-			fmt.Println("Error closing JSON file:", err)
+			logger.Error("Error closing file:", "error", err)
 		}
 	}(file)
 
@@ -572,8 +588,7 @@ func (store *jsonTaskStore) AddTask(title string, description string) Task {
 
 	//write to file
 	if err := store.saveToFile(); err != nil {
-		// Log or handle the error as needed, for example:
-		fmt.Println("Error saving to file:", err)
+		logger.Error("Failed to save JSON file", "error", err)
 	}
 
 	return task
@@ -590,7 +605,6 @@ func (store *jsonTaskStore) RemoveTask(id int) error {
 
 	delete(store.tasks, id)
 
-	// Save the updated tasks to the JSON file
 	if err := store.saveToFile(); err != nil {
 		logger.Error("Error saving to file after deletion", "error", err)
 		return err
