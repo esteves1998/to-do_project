@@ -22,7 +22,7 @@ Task Manager is a simple application written in Go that allows you to manage tas
    go run main.go
    ```
 
-3. The REST API server will start at `http://localhost:8080`, and the CLI will be ready for interactive commands.
+2. The REST API server will start at `http://localhost:8080`, and the CLI will be ready for interactive commands.
 
 ## REST API Endpoints
 
