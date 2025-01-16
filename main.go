@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -239,13 +240,18 @@ func printHelp() {
 }
 
 func handleAdd(args []string) {
-	if len(args) < 2 {
-		logger.Info("Usage: add <title> <description>", "args", args)
-		fmt.Println("Usage: add <title> <description>")
+	command := strings.Join(args, " ")
+
+	quoteRegex := regexp.MustCompile(`"(.*?)"`)
+	matches := quoteRegex.FindAllStringSubmatch(command, -1)
+
+	if len(matches) < 2 {
+		logger.Info("Usage: add \"<title>\" \"<description>\"", "args", args)
 		return
 	}
-	title := args[0]
-	description := strings.Join(args[1:], " ")
+
+	title := matches[0][1]
+	description := matches[1][1]
 
 	task := Task{
 		Title:       title,
@@ -286,15 +292,12 @@ func handleList() {
 
 	for _, task := range tasks {
 		logger.Info("Task added successfully", "taskID", task.ID)
-		fmt.Printf("ID: %d, Title: %s, Description: %s, Completed: %v\n",
-			task.ID, task.Title, task.Description, task.Completed)
 	}
 }
 
 func handleGetTaskByID(args []string) {
 	if len(args) != 1 {
 		logger.Info("Usage: get <id>")
-		fmt.Println("Usage: get <id>")
 		return
 	}
 
@@ -326,7 +329,6 @@ func handleGetTaskByID(args []string) {
 func handleComplete(args []string) {
 	if len(args) < 1 {
 		logger.Info("Usage: complete <id>")
-		fmt.Println("Usage: complete <id>")
 		return
 	}
 
@@ -349,17 +351,14 @@ func handleComplete(args []string) {
 
 	if resp.StatusCode == http.StatusOK {
 		logger.Info("Task completed successfully", "id", id)
-		fmt.Printf("Task %s marked as completed.\n", id)
 	} else {
 		logger.Error("Failed to complete task", "id", id, "error", resp.Status)
-		fmt.Printf("Failed to complete task %s: %s\n", id, resp.Status)
 	}
 }
 
 func handleDelete(args []string) {
 	if len(args) < 1 {
 		logger.Info("Usage: delete <id>")
-		fmt.Println("Usage: delete <id>")
 		return
 	}
 
