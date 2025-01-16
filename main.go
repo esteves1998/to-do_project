@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -398,9 +399,10 @@ func toJSON(task Task) *strings.Reader {
 }
 
 type inMemoryTaskStore struct {
-	tasks map[int]Task
-	mutex sync.Mutex
-	idSeq int
+	tasks       map[int]Task
+	mutex       sync.Mutex
+	idSeq       int
+	reusableIds []int
 }
 
 func localTaskStore() *inMemoryTaskStore {
@@ -412,13 +414,24 @@ func localTaskStore() *inMemoryTaskStore {
 func (store *inMemoryTaskStore) AddTask(title string, description string) Task {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
-	store.idSeq++
+
+	var id int
+
+	if len(store.reusableIds) > 0 {
+		id = store.reusableIds[0]
+		store.reusableIds = store.reusableIds[1:]
+	} else {
+		store.idSeq++
+		id = store.idSeq
+	}
+
 	task := Task{
-		ID:          store.idSeq,
+		ID:          id,
 		Title:       title,
 		Description: description,
 		Completed:   false,
 	}
+
 	store.tasks[task.ID] = task
 	return task
 }
@@ -432,6 +445,8 @@ func (store *inMemoryTaskStore) RemoveTask(id int) error {
 	}
 
 	delete(store.tasks, id)
+	store.reusableIds = append(store.reusableIds, id)
+	sort.Ints(store.reusableIds)
 	return nil
 }
 
@@ -474,10 +489,11 @@ func (store *inMemoryTaskStore) CompleteTask(id int) error {
 }
 
 type jsonTaskStore struct {
-	filePath string
-	mutex    sync.Mutex
-	tasks    map[int]Task
-	idSeq    int
+	filePath    string
+	mutex       sync.Mutex
+	tasks       map[int]Task
+	idSeq       int
+	reusableIds []int
 }
 
 func newJSONTaskStore(filePath string) *jsonTaskStore {
@@ -492,8 +508,9 @@ func newJSONTaskStore(filePath string) *jsonTaskStore {
 
 	// Initialize the task store
 	store := &jsonTaskStore{
-		filePath: filePath,
-		tasks:    make(map[int]Task),
+		filePath:    filePath,
+		tasks:       make(map[int]Task),
+		reusableIds: []int{},
 	}
 
 	// Load tasks from the file during initialization
@@ -545,13 +562,27 @@ func (store *jsonTaskStore) loadFromFile() error {
 
 	store.tasks = tasks
 
+	// Reset reusableIds and track used IDs
+	store.reusableIds = []int{}
+	usedIds := make(map[int]bool)
+
 	// Determine the highest ID to update the sequence
 	highestID := 0
+
 	for id := range tasks {
+		usedIds[id] = true // Mark ID as used
 		if id > highestID {
-			highestID = id
+			highestID = id // Update the highest ID
 		}
 	}
+
+	// Populate reusableIds with missing IDs
+	for id := 1; id < highestID; id++ {
+		if !usedIds[id] {
+			store.reusableIds = append(store.reusableIds, id)
+		}
+	}
+
 	store.idSeq = highestID
 
 	return nil
@@ -577,16 +608,24 @@ func (store *jsonTaskStore) saveToFile() error {
 func (store *jsonTaskStore) AddTask(title string, description string) Task {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
-	store.idSeq++
+
+	var id int
+	if len(store.reusableIds) > 0 {
+		id = store.reusableIds[0]
+		store.reusableIds = store.reusableIds[1:] // Remove the first element
+	} else {
+		store.idSeq++
+		id = store.idSeq
+	}
+
 	task := Task{
-		ID:          store.idSeq,
+		ID:          id,
 		Title:       title,
 		Description: description,
 		Completed:   false,
 	}
 	store.tasks[task.ID] = task
 
-	//write to file
 	if err := store.saveToFile(); err != nil {
 		logger.Error("Failed to save JSON file", "error", err)
 	}
@@ -604,6 +643,7 @@ func (store *jsonTaskStore) RemoveTask(id int) error {
 	}
 
 	delete(store.tasks, id)
+	store.reusableIds = append(store.reusableIds, id) // Add ID to reusable IDs
 
 	if err := store.saveToFile(); err != nil {
 		logger.Error("Error saving to file after deletion", "error", err)
@@ -623,6 +663,10 @@ func (store *jsonTaskStore) ListTasks() []Task {
 	for _, task := range store.tasks {
 		taskList = append(taskList, task)
 	}
+
+	sort.Slice(taskList, func(i, j int) bool {
+		return taskList[i].ID < taskList[j].ID
+	})
 
 	return taskList
 }
