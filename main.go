@@ -44,12 +44,12 @@ type UserStore struct {
 	mutex sync.Mutex
 }
 
-var userStore = UserStore{users: make(map[string]User)}
+var userStore UserStore
+var logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 const traceIDKey = "TraceID"
 
 var taskStore TaskStore
-var logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 func main() {
 	// Command-line argument to choose the task store type.
@@ -60,8 +60,10 @@ func main() {
 	switch *storeType {
 	case "json":
 		taskStore = newJSONTaskStore("tasks.json")
+		userStore = UserStore{users: make(map[string]User)}
 	case "memory":
 		taskStore = localTaskStore()
+		userStore = UserStore{users: make(map[string]User)}
 	default:
 		fmt.Println("Invalid store type. Use 'memory' or 'json'.")
 		os.Exit(1)
@@ -231,7 +233,7 @@ func runCLI() {
 		case "addUser":
 			handleAddUser(args)
 		case "listUsers":
-			handleListUsers()
+			handleListUsers(args)
 		case "add":
 			handleAdd(args)
 		case "list":
@@ -545,7 +547,7 @@ func (store *inMemoryTaskStore) CompleteTask(userName string, id int) error {
 type jsonTaskStore struct {
 	filePath    string
 	mutex       sync.Mutex
-	tasks       map[int]Task
+	tasks       map[string]map[int]Task // Map of userName to tasks
 	idSeq       int
 	reusableIds []int
 }
@@ -563,7 +565,7 @@ func newJSONTaskStore(filePath string) *jsonTaskStore {
 	// Initialize the task store
 	store := &jsonTaskStore{
 		filePath:    filePath,
-		tasks:       make(map[int]Task),
+		tasks:       make(map[string]map[int]Task), // Initialize the map for user-specific tasks
 		reusableIds: []int{},
 	}
 
@@ -589,8 +591,8 @@ func createEmptyJSONFile(filePath string) error {
 		}
 	}(file)
 
-	// Write an empty JSON array to the file
-	_, err = file.WriteString("[]")
+	// Write an empty JSON object to the file
+	_, err = file.WriteString("{}")
 	return err
 }
 
@@ -609,7 +611,7 @@ func (store *jsonTaskStore) loadFromFile() error {
 		}
 	}(file)
 
-	tasks := make(map[int]Task) // Match the type used in saveToFile
+	tasks := make(map[string]map[int]Task) // Match the type used in saveToFile
 	if err := json.NewDecoder(file).Decode(&tasks); err != nil {
 		return err
 	}
@@ -623,10 +625,12 @@ func (store *jsonTaskStore) loadFromFile() error {
 	// Determine the highest ID to update the sequence
 	highestID := 0
 
-	for id := range tasks {
-		usedIds[id] = true // Mark ID as used
-		if id > highestID {
-			highestID = id // Update the highest ID
+	for _, userTasks := range tasks {
+		for id := range userTasks {
+			usedIds[id] = true // Mark ID as used
+			if id > highestID {
+				highestID = id // Update the highest ID
+			}
 		}
 	}
 
@@ -678,7 +682,12 @@ func (store *jsonTaskStore) AddTask(userName, title string, description string) 
 		Description: description,
 		Completed:   false,
 	}
-	store.tasks[task.ID] = task
+
+	// Store task under the user
+	if store.tasks[userName] == nil {
+		store.tasks[userName] = make(map[int]Task)
+	}
+	store.tasks[userName][task.ID] = task
 
 	if err := store.saveToFile(); err != nil {
 		logger.Error("Failed to save JSON file", "error", err)
@@ -691,36 +700,41 @@ func (store *jsonTaskStore) RemoveTask(userName string, id int) error {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 
-	if _, exists := store.tasks[id]; !exists {
-		logger.Error("Task not found for deletion", "taskID", id)
-		return errors.New("task not found")
+	if userTasks, exists := store.tasks[userName]; exists {
+		if _, ok := userTasks[id]; !ok {
+			return errors.New("task not found for user")
+		}
+
+		delete(userTasks, id)
+		if len(userTasks) == 0 {
+			delete(store.tasks, userName) // Remove user if no tasks are left
+		}
+
+		store.reusableIds = append(store.reusableIds, id)
+
+		if err := store.saveToFile(); err != nil {
+			logger.Error("Error saving to file after deletion", "error", err)
+			return err
+		}
+
+		logger.Info("Task deleted and file updated", "taskID", id, "userName", userName)
+		return nil
 	}
 
-	delete(store.tasks, id)
-	store.reusableIds = append(store.reusableIds, id)
-
-	if err := store.saveToFile(); err != nil {
-		logger.Error("Error saving to file after deletion", "error", err)
-		return err
-	}
-
-	logger.Info("Task deleted and file updated", "taskID", id)
-	return nil
+	return errors.New("user not found")
 }
 
 func (store *jsonTaskStore) ListTasks(userName string) []Task {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 
-	taskList := make([]Task, 0, len(store.tasks))
+	taskList := make([]Task, 0)
 
-	for _, task := range store.tasks {
-		taskList = append(taskList, task)
+	if userTasks, exists := store.tasks[userName]; exists {
+		for _, task := range userTasks {
+			taskList = append(taskList, task)
+		}
 	}
-
-	sort.Slice(taskList, func(i, j int) bool {
-		return taskList[i].ID < taskList[j].ID
-	})
 
 	return taskList
 }
@@ -729,33 +743,33 @@ func (store *jsonTaskStore) GetTask(userName string, id int) (Task, error) {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 
-	task, exists := store.tasks[id]
-	if !exists {
-		return Task{}, errors.New("task not found")
+	if userTasks, exists := store.tasks[userName]; exists {
+		if task, exists := userTasks[id]; exists {
+			return task, nil
+		}
 	}
-	return task, nil
+	return Task{}, errors.New("task not found for user")
 }
 
 func (store *jsonTaskStore) CompleteTask(userName string, id int) error {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 
-	task, exists := store.tasks[id]
-	if !exists {
-		logger.Error("Task not found", "taskID", id)
-		return errors.New("task not found")
+	if userTasks, exists := store.tasks[userName]; exists {
+		if task, exists := userTasks[id]; exists {
+			task.Completed = true
+			userTasks[id] = task
+
+			if err := store.saveToFile(); err != nil {
+				logger.Error("Error saving to file", "error", err)
+				return err
+			}
+
+			logger.Info("Task marked as complete and saved to file", "taskID", id, "userName", userName)
+			return nil
+		}
 	}
-
-	task.Completed = true
-	store.tasks[id] = task
-
-	if err := store.saveToFile(); err != nil {
-		logger.Error("Error saving to file", "error", err)
-		return err
-	}
-
-	logger.Info("Task marked as complete and saved to file", "taskID", id)
-	return nil
+	return errors.New("task not found for user")
 }
 
 func (store *UserStore) AddUser(username string) error {
@@ -815,10 +829,22 @@ func listUsersHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSONResponse(w, http.StatusOK, users)
 }
 
-func handleListUsers() {
-	users := userStore.ListUsers()
+func handleListUsers(args []string) {
+	resp, err := http.Get("http://localhost:8080/users/list")
+	if err != nil {
+		logger.Error("Failed to list users", "error", err)
+		return
+	}
+	defer safeClose(resp.Body)
+
+	var users []User
+	if err := json.NewDecoder(resp.Body).Decode(&users); err != nil {
+		logger.Error("Failed to decode users response", "error", err)
+		return
+	}
+
 	if len(users) == 0 {
-		logger.Info("No users found.")
+		logger.Info("No users found")
 		return
 	}
 
