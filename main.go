@@ -233,7 +233,7 @@ func runCLI() {
 		case "addUser":
 			handleAddUser(args)
 		case "listUsers":
-			handleListUsers(args)
+			handleListUsers()
 		case "add":
 			handleAdd(args)
 		case "list":
@@ -824,12 +824,12 @@ func (store *UserStore) ListUsers() []User {
 	return users
 }
 
-func listUsersHandler(w http.ResponseWriter, r *http.Request) {
+func listUsersHandler(w http.ResponseWriter, _ *http.Request) {
 	users := userStore.ListUsers()
 	writeJSONResponse(w, http.StatusOK, users)
 }
 
-func handleListUsers(args []string) {
+func handleListUsers() {
 	resp, err := http.Get("http://localhost:8080/users/list")
 	if err != nil {
 		logger.Error("Failed to list users", "error", err)
