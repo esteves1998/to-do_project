@@ -7,7 +7,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/google/uuid"
 	"io"
 	"log/slog"
 	"net/http"
@@ -17,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/google/uuid"
 )
 
 type Task struct {
@@ -26,13 +27,24 @@ type Task struct {
 	Completed   bool   `json:"completed"`
 }
 
-type TaskStore interface {
-	AddTask(title string, description string) Task
-	RemoveTask(id int) error
-	ListTasks() []Task
-	GetTask(id int) (Task, error)
-	CompleteTask(id int) error
+type User struct {
+	Username string `json:"username"`
 }
+
+type TaskStore interface {
+	AddTask(userName, title string, description string) Task
+	RemoveTask(userName string, id int) error
+	ListTasks(userName string) []Task
+	GetTask(userName string, id int) (Task, error)
+	CompleteTask(userName string, id int) error
+}
+
+type UserStore struct {
+	users map[string]User
+	mutex sync.Mutex
+}
+
+var userStore = UserStore{users: make(map[string]User)}
 
 const traceIDKey = "TraceID"
 
@@ -61,10 +73,11 @@ func main() {
 }
 
 func startServer() {
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("/tasks", taskHandler)
 	mux.HandleFunc("/tasks/", singleTaskHandler) // For operations that require a task ID
+	mux.HandleFunc("/users", addUserHandler)
+	mux.HandleFunc("/users/list", listUsersHandler)
 
 	loggedMux := TraceMiddleware(mux)
 
@@ -88,21 +101,27 @@ func TraceMiddleware(next http.Handler) http.Handler {
 
 func taskHandler(w http.ResponseWriter, r *http.Request) {
 	traceID := r.Context().Value(traceIDKey).(string)
+	userName := r.URL.Query().Get("username") // Get username from query parameters
+
+	if userName == "" {
+		http.Error(w, "Username is required", http.StatusBadRequest)
+		return
+	}
 
 	switch r.Method {
 	case http.MethodGet:
-		logger.Info("Listing tasks", "traceID", traceID)
-		tasks := taskStore.ListTasks()
+		logger.Info("Listing tasks", "traceID", traceID, "userName", userName)
+		tasks := taskStore.ListTasks(userName)
 		writeJSONResponse(w, http.StatusOK, tasks)
 
 	case http.MethodPost:
-		logger.Info("Creating task", "traceID", traceID)
+		logger.Info("Creating task", "traceID", traceID, "userName", userName)
 		var task Task
 		if !parseJSONRequest(w, r, &task) {
 			return
 		}
-		newTask := taskStore.AddTask(task.Title, task.Description)
-		logger.Info("Added task", "traceID", traceID, "taskID", newTask.ID)
+		newTask := taskStore.AddTask(userName, task.Title, task.Description)
+		logger.Info("Added task", "traceID", traceID, "taskID", newTask.ID, "userName", userName)
 		writeJSONResponse(w, http.StatusCreated, newTask)
 
 	default:
@@ -113,6 +132,7 @@ func taskHandler(w http.ResponseWriter, r *http.Request) {
 
 func singleTaskHandler(w http.ResponseWriter, r *http.Request) {
 	traceID := r.Context().Value(traceIDKey).(string)
+	userName := r.URL.Query().Get("username") // Get username from query parameters
 	idStr := strings.TrimPrefix(r.URL.Path, "/tasks/")
 
 	id, err := strconv.Atoi(idStr)
@@ -124,28 +144,28 @@ func singleTaskHandler(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet: // Fetch a single task
-		logger.Info("Fetching task", "taskID", id, "traceID", traceID)
-		task, err := taskStore.GetTask(id)
+		logger.Info("Fetching task", "taskID", id, "traceID", traceID, "userName", userName)
+		task, err := taskStore.GetTask(userName, id)
 		if err != nil {
-			logger.Error("Task not found", "taskID", id, "traceID", traceID)
+			logger.Error("Task not found", "taskID", id, "traceID", traceID, "userName", userName)
 			http.Error(w, "Task not found", http.StatusNotFound)
 			return
 		}
 		writeJSONResponse(w, http.StatusOK, task)
 
 	case http.MethodPut: // Update a task (mark as complete)
-		logger.Info("Completing task", "taskID", id, "traceID", traceID)
-		if err := taskStore.CompleteTask(id); err != nil {
-			logger.Error("Failed to complete task", "taskID", id, "traceID", traceID, "error", err)
+		logger.Info("Completing task", "taskID", id, "traceID", traceID, "userName", userName)
+		if err := taskStore.CompleteTask(userName, id); err != nil {
+			logger.Error("Failed to complete task", "taskID", id, "traceID", traceID, "userName", userName, "error", err)
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
 
 	case http.MethodDelete: // Delete a task
-		logger.Info("Deleting task", "taskID", id, "traceID", traceID)
-		if err := taskStore.RemoveTask(id); err != nil {
-			logger.Error("Failed to delete task", "taskID", id, "traceID", traceID, "error", err)
+		logger.Info("Deleting task", "taskID", id, "traceID", traceID, "userName", userName)
+		if err := taskStore.RemoveTask(userName, id); err != nil {
+			logger.Error("Failed to delete task", "taskID", id, "traceID", traceID, "userName", userName, "error", err)
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
@@ -199,7 +219,7 @@ func runCLI() {
 		input := scanner.Text()
 		parts := strings.Fields(input)
 
-		//if user gives a blank command do nothing
+		// If user gives a blank command do nothing
 		if len(parts) == 0 {
 			continue
 		}
@@ -208,10 +228,14 @@ func runCLI() {
 		args := parts[1:]
 
 		switch cmd {
+		case "addUser":
+			handleAddUser(args)
+		case "listUsers":
+			handleListUsers()
 		case "add":
 			handleAdd(args)
 		case "list":
-			handleList()
+			handleList(args)
 		case "get":
 			handleGetTaskByID(args)
 		case "complete":
@@ -231,16 +255,24 @@ func runCLI() {
 
 func printHelp() {
 	fmt.Println("Commands:")
-	fmt.Println("  add <title> <description>    Add a new task")
-	fmt.Println("  list                         List all tasks")
-	fmt.Println("  complete <id>                Mark a task as completed")
-	fmt.Println("  delete <id>                  Delete a task")
-	fmt.Println("  help                         Show this help message")
-	fmt.Println("  exit                         Exit the program")
+	fmt.Println("  add <username> \"<title>\" \"<description>\"    Add a new task for a user")
+	fmt.Println("  list <username>                         List all tasks for a user")
+	fmt.Println("  complete <username> <id>                Mark a task as completed for a user")
+	fmt.Println("  delete <username> <id>                  Delete a task for a user")
+	fmt.Println("  help                                     Show this help message")
+	fmt.Println("  exit                                     Exit the program")
+	fmt.Println("  addUser <username>                        Add a new user")
+	fmt.Println("  listUsers                                  List all users")
 }
 
 func handleAdd(args []string) {
-	command := strings.Join(args, " ")
+	if len(args) < 3 {
+		logger.Info("Usage: add <username> \"<title>\" \"<description>\"")
+		return
+	}
+
+	userName := args[0]
+	command := strings.Join(args[1:], " ")
 
 	quoteRegex := regexp.MustCompile(`"(.*?)"`)
 	matches := quoteRegex.FindAllStringSubmatch(command, -1)
@@ -257,7 +289,7 @@ func handleAdd(args []string) {
 		Title:       title,
 		Description: description,
 	}
-	resp, err := http.Post("http://localhost:8080/tasks", "application/json", toJSON(task))
+	resp, err := http.Post(fmt.Sprintf("http://localhost:8080/tasks?username=%s", userName), "application/json", toJSON(task))
 	if err != nil {
 		logger.Error("Failed to add task", "taskID", task.ID, "error", err)
 		return
@@ -271,8 +303,14 @@ func handleAdd(args []string) {
 	}
 }
 
-func handleList() {
-	resp, err := http.Get("http://localhost:8080/tasks")
+func handleList(args []string) {
+	if len(args) != 1 {
+		logger.Info("Usage: list <username>")
+		return
+	}
+
+	userName := args[0]
+	resp, err := http.Get(fmt.Sprintf("http://localhost:8080/tasks?username=%s", userName))
 	if err != nil {
 		logger.Error("Failed to list tasks", "error", err)
 		return
@@ -286,23 +324,24 @@ func handleList() {
 	}
 
 	if len(tasks) == 0 {
-		logger.Info("No tasks found")
+		logger.Info("No tasks found for user", "userName", userName)
 		return
 	}
 
 	for _, task := range tasks {
-		logger.Info("Task added successfully", "taskID", task.ID)
+		logger.Info("Task found", "taskID", task.ID, "userName", userName)
 	}
 }
 
 func handleGetTaskByID(args []string) {
-	if len(args) != 1 {
-		logger.Info("Usage: get <id>")
+	if len(args) != 2 {
+		logger.Info("Usage: get <username> <id>")
 		return
 	}
 
-	id := args[0]
-	url := fmt.Sprintf("http://localhost:8080/tasks/%s", id)
+	userName := args[0]
+	id := args[1]
+	url := fmt.Sprintf("http://localhost:8080/tasks/%s?username=%s", id, userName)
 
 	resp, err := http.Get(url)
 	if err != nil {
@@ -320,20 +359,21 @@ func handleGetTaskByID(args []string) {
 		fmt.Printf("ID: %d, Title: %s, Description: %s, Completed: %v\n",
 			task.ID, task.Title, task.Description, task.Completed)
 	} else if resp.StatusCode == http.StatusNotFound {
-		fmt.Printf("Task with ID %s not found.\n", id)
+		fmt.Printf("Task with ID %s not found for user %s.\n", id, userName)
 	} else {
 		fmt.Printf("Unexpected error: %s\n", resp.Status)
 	}
 }
 
 func handleComplete(args []string) {
-	if len(args) < 1 {
-		logger.Info("Usage: complete <id>")
+	if len(args) < 2 {
+		logger.Info("Usage: complete <username> <id>")
 		return
 	}
 
-	id := args[0]
-	url := fmt.Sprintf("http://localhost:8080/tasks/%s", id)
+	userName := args[0]
+	id := args[1]
+	url := fmt.Sprintf("http://localhost:8080/tasks/%s?username=%s", id, userName)
 
 	req, err := http.NewRequest(http.MethodPut, url, nil)
 	if err != nil {
@@ -350,20 +390,21 @@ func handleComplete(args []string) {
 	defer safeClose(resp.Body)
 
 	if resp.StatusCode == http.StatusOK {
-		logger.Info("Task completed successfully", "id", id)
+		logger.Info("Task completed successfully", "id", id, "userName", userName)
 	} else {
 		logger.Error("Failed to complete task", "id", id, "error", resp.Status)
 	}
 }
 
 func handleDelete(args []string) {
-	if len(args) < 1 {
-		logger.Info("Usage: delete <id>")
+	if len(args) < 2 {
+		logger.Info("Usage: delete <username> <id>")
 		return
 	}
 
-	id := args[0]
-	url := fmt.Sprintf("http://localhost:8080/tasks/%s", id)
+	userName := args[0]
+	id := args[1]
+	url := fmt.Sprintf("http://localhost:8080/tasks/%s?username=%s", id, userName)
 
 	req, err := http.NewRequest(http.MethodDelete, url, nil)
 	if err != nil {
@@ -380,7 +421,7 @@ func handleDelete(args []string) {
 	defer safeClose(resp.Body)
 
 	if resp.StatusCode == http.StatusOK {
-		fmt.Printf("Task %s deleted successfully.\n", id)
+		fmt.Printf("Task %s deleted successfully for user %s.\n", id, userName)
 	} else {
 		fmt.Printf("Failed to delete task %s: %s\n", id, resp.Status)
 	}
@@ -398,7 +439,7 @@ func toJSON(task Task) *strings.Reader {
 }
 
 type inMemoryTaskStore struct {
-	tasks       map[int]Task
+	tasks       map[int]map[string]Task // Map of userName to tasks
 	mutex       sync.Mutex
 	idSeq       int
 	reusableIds []int
@@ -406,11 +447,11 @@ type inMemoryTaskStore struct {
 
 func localTaskStore() *inMemoryTaskStore {
 	return &inMemoryTaskStore{
-		tasks: make(map[int]Task),
+		tasks: make(map[int]map[string]Task),
 	}
 }
 
-func (store *inMemoryTaskStore) AddTask(title string, description string) Task {
+func (store *inMemoryTaskStore) AddTask(userName, title string, description string) Task {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 
@@ -431,11 +472,15 @@ func (store *inMemoryTaskStore) AddTask(title string, description string) Task {
 		Completed:   false,
 	}
 
-	store.tasks[task.ID] = task
+	if store.tasks[id] == nil {
+		store.tasks[id] = make(map[string]Task)
+	}
+	store.tasks[id][userName] = task // Store task under the user
+
 	return task
 }
 
-func (store *inMemoryTaskStore) RemoveTask(id int) error {
+func (store *inMemoryTaskStore) RemoveTask(userName string, id int) error {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 
@@ -443,48 +488,58 @@ func (store *inMemoryTaskStore) RemoveTask(id int) error {
 		return errors.New("task not found")
 	}
 
-	delete(store.tasks, id)
+	if _, ok := store.tasks[id][userName]; !ok {
+		return errors.New("task not found for user")
+	}
+
+	delete(store.tasks[id], userName)
+	if len(store.tasks[id]) == 0 {
+		delete(store.tasks, id) // Remove task if no users are left
+	}
+
 	store.reusableIds = append(store.reusableIds, id)
 	sort.Ints(store.reusableIds)
 	return nil
 }
 
-func (store *inMemoryTaskStore) ListTasks() []Task {
+func (store *inMemoryTaskStore) ListTasks(userName string) []Task {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 
-	taskList := make([]Task, 0, len(store.tasks))
-
-	for _, task := range store.tasks {
-		taskList = append(taskList, task)
+	var taskList []Task
+	for _, userTasks := range store.tasks {
+		if task, exists := userTasks[userName]; exists {
+			taskList = append(taskList, task)
+		}
 	}
 
 	return taskList
 }
 
-func (store *inMemoryTaskStore) GetTask(id int) (Task, error) {
+func (store *inMemoryTaskStore) GetTask(userName string, id int) (Task, error) {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 
-	task, exists := store.tasks[id]
-	if !exists {
-		return Task{}, errors.New("task not found")
+	if userTasks, exists := store.tasks[id]; exists {
+		if task, exists := userTasks[userName]; exists {
+			return task, nil
+		}
 	}
-	return task, nil
+	return Task{}, errors.New("task not found for user")
 }
 
-func (store *inMemoryTaskStore) CompleteTask(id int) error {
+func (store *inMemoryTaskStore) CompleteTask(userName string, id int) error {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 
-	task, exists := store.tasks[id]
-	if !exists {
-		return errors.New("task not found")
+	if userTasks, exists := store.tasks[id]; exists {
+		if task, exists := userTasks[userName]; exists {
+			task.Completed = true
+			userTasks[userName] = task
+			return nil
+		}
 	}
-
-	task.Completed = true
-	store.tasks[id] = task
-	return nil
+	return errors.New("task not found for user")
 }
 
 type jsonTaskStore struct {
@@ -604,7 +659,7 @@ func (store *jsonTaskStore) saveToFile() error {
 	return encoder.Encode(store.tasks)
 }
 
-func (store *jsonTaskStore) AddTask(title string, description string) Task {
+func (store *jsonTaskStore) AddTask(userName, title string, description string) Task {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 
@@ -632,7 +687,7 @@ func (store *jsonTaskStore) AddTask(title string, description string) Task {
 	return task
 }
 
-func (store *jsonTaskStore) RemoveTask(id int) error {
+func (store *jsonTaskStore) RemoveTask(userName string, id int) error {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 
@@ -642,7 +697,7 @@ func (store *jsonTaskStore) RemoveTask(id int) error {
 	}
 
 	delete(store.tasks, id)
-	store.reusableIds = append(store.reusableIds, id) // Add ID to reusable IDs
+	store.reusableIds = append(store.reusableIds, id)
 
 	if err := store.saveToFile(); err != nil {
 		logger.Error("Error saving to file after deletion", "error", err)
@@ -653,7 +708,7 @@ func (store *jsonTaskStore) RemoveTask(id int) error {
 	return nil
 }
 
-func (store *jsonTaskStore) ListTasks() []Task {
+func (store *jsonTaskStore) ListTasks(userName string) []Task {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 
@@ -670,7 +725,7 @@ func (store *jsonTaskStore) ListTasks() []Task {
 	return taskList
 }
 
-func (store *jsonTaskStore) GetTask(id int) (Task, error) {
+func (store *jsonTaskStore) GetTask(userName string, id int) (Task, error) {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 
@@ -681,7 +736,7 @@ func (store *jsonTaskStore) GetTask(id int) (Task, error) {
 	return task, nil
 }
 
-func (store *jsonTaskStore) CompleteTask(id int) error {
+func (store *jsonTaskStore) CompleteTask(userName string, id int) error {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 
@@ -701,4 +756,73 @@ func (store *jsonTaskStore) CompleteTask(id int) error {
 
 	logger.Info("Task marked as complete and saved to file", "taskID", id)
 	return nil
+}
+
+func (store *UserStore) AddUser(username string) error {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+
+	if _, exists := store.users[username]; exists {
+		return errors.New("user already exists")
+	}
+
+	store.users[username] = User{Username: username}
+	return nil
+}
+
+func handleAddUser(args []string) {
+	if len(args) != 1 {
+		logger.Info("Usage: adduser <username>")
+		return
+	}
+
+	username := args[0]
+	if err := userStore.AddUser(username); err != nil {
+		logger.Error("Failed to add user", "error", err)
+		return
+	}
+
+	logger.Info("User added successfully", "username", username)
+}
+
+func addUserHandler(w http.ResponseWriter, r *http.Request) {
+	var user User
+	if !parseJSONRequest(w, r, &user) {
+		return
+	}
+
+	if err := userStore.AddUser(user.Username); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+
+	writeJSONResponse(w, http.StatusCreated, user)
+}
+
+func (store *UserStore) ListUsers() []User {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+
+	users := make([]User, 0, len(store.users))
+	for _, user := range store.users {
+		users = append(users, user)
+	}
+	return users
+}
+
+func listUsersHandler(w http.ResponseWriter, r *http.Request) {
+	users := userStore.ListUsers()
+	writeJSONResponse(w, http.StatusOK, users)
+}
+
+func handleListUsers() {
+	users := userStore.ListUsers()
+	if len(users) == 0 {
+		logger.Info("No users found.")
+		return
+	}
+
+	for _, user := range users {
+		logger.Info("User found", "username", user.Username)
+	}
 }

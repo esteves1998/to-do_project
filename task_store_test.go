@@ -1,5 +1,8 @@
 package main
 
+//parallel test
+//benchmark test
+
 import (
 	"strconv"
 	"sync"
