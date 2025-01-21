@@ -302,7 +302,7 @@ func runCLI() {
 		case "add":
 			handleAdd(args)
 		case "list":
-			handleList()
+			handleList(args)
 		case "get":
 			handleGetTaskByID(args)
 		case "complete":
@@ -374,7 +374,7 @@ func handleAdd(args []string) {
 	}
 }
 
-func handleList() {
+func handleList(args []string) {
 	// Use the stored logged-in username
 	userName := loggedInUsername
 
@@ -392,7 +392,7 @@ func handleList() {
 
 	var tasks []Task
 	if err := json.NewDecoder(resp.Body).Decode(&tasks); err != nil {
-		logger.Error("Failed to list tasks", "error", err)
+		logger.Error("Failed to decode tasks response", "error", err)
 		return
 	}
 
@@ -401,8 +401,9 @@ func handleList() {
 		return
 	}
 
+	// Log each task's details
 	for _, task := range tasks {
-		logger.Info("Task found", "taskID", task.ID, "userName", userName)
+		logger.Info("Task found", "taskID", task.ID, "title", task.Title, "description", task.Description, "completed", task.Completed)
 	}
 }
 
@@ -1038,5 +1039,4 @@ func (store *UserStore) CheckPassword(username, password string) error {
 }
 
 //check api
-//remove add user
-//fix list so it shows the tasks isntead of the username
+//fix list so it shows the tasks instead of the username
