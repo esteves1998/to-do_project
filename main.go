@@ -401,7 +401,6 @@ func handleList(args []string) {
 		return
 	}
 
-	// Log each task's details
 	for _, task := range tasks {
 		logger.Info("Task found", "taskID", task.ID, "title", task.Title, "description", task.Description, "completed", task.Completed)
 	}
@@ -1039,4 +1038,3 @@ func (store *UserStore) CheckPassword(username, password string) error {
 }
 
 //check api
-//fix list so it shows the tasks instead of the username
