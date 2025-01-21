@@ -20,6 +20,8 @@ import (
 	"github.com/google/uuid"
 )
 
+var isLoggedIn bool
+
 type Task struct {
 	ID          int    `json:"id"`
 	Title       string `json:"title"`
@@ -260,6 +262,17 @@ func parseJSONRequest(w http.ResponseWriter, r *http.Request, v interface{}) boo
 func runCLI() {
 	scanner := bufio.NewScanner(os.Stdin)
 	logger.Info("Task Manager started (connected to REST API)")
+
+	// Loop until the user is logged in
+	for {
+		loginOrRegister(scanner) // Prompt for login or registration
+
+		// After successful login, break out of the loop
+		if isLoggedIn {
+			break
+		}
+	}
+
 	printHelp()
 
 	for {
@@ -943,4 +956,80 @@ func usernameExists(userName string) bool {
 		fmt.Printf("Error: Username '%s' does not exist.\n", userName)
 	}
 	return exists
+}
+
+func handleRegister(scanner *bufio.Scanner) {
+	fmt.Print("Enter username: ")
+	scanner.Scan()
+	username := scanner.Text()
+
+	fmt.Print("Enter password: ")
+	scanner.Scan()
+	password := scanner.Text()
+
+	if err := userStore.AddUser(username, password); err != nil {
+		fmt.Println("Registration failed:", err)
+		isLoggedIn = false // Set login status to false
+	} else {
+		fmt.Println("Registration successful! You can now log in.")
+		// Prompt for login immediately after registration
+		handleLogin(scanner)
+	}
+}
+
+func loginOrRegister(scanner *bufio.Scanner) {
+	fmt.Println("Welcome to the Task Manager!")
+	fmt.Println("Would you like to (1) Login or (2) Register?")
+
+	for {
+		fmt.Print("> ")
+		if !scanner.Scan() {
+			break
+		}
+
+		input := scanner.Text()
+		if input == "1" {
+			handleLogin(scanner)
+			break
+		} else if input == "2" {
+			handleRegister(scanner)
+			break
+		} else {
+			fmt.Println("Invalid option. Please enter 1 to Login or 2 to Register.")
+		}
+	}
+}
+
+func handleLogin(scanner *bufio.Scanner) {
+	fmt.Print("Enter username: ")
+	scanner.Scan()
+	username := scanner.Text()
+
+	fmt.Print("Enter password: ")
+	scanner.Scan()
+	password := scanner.Text()
+
+	if err := userStore.CheckPassword(username, password); err != nil {
+		fmt.Println("Login failed:", err)
+		isLoggedIn = false // Set login status to false
+	} else {
+		fmt.Println("Login successful!")
+		isLoggedIn = true // Set login status to true
+	}
+}
+
+func (store *UserStore) CheckPassword(username, password string) error {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+
+	user, exists := store.users[username]
+	if !exists {
+		return errors.New("user not found")
+	}
+
+	if user.Password != password {
+		return errors.New("invalid password")
+	}
+
+	return nil
 }
