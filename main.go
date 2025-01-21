@@ -29,6 +29,7 @@ type Task struct {
 
 type User struct {
 	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
 type TaskStore interface {
@@ -306,7 +307,7 @@ func printHelp() {
 	fmt.Println("  delete <username> <id>                  Delete a task for a user")
 	fmt.Println("  help                                     Show this help message")
 	fmt.Println("  exit                                     Exit the program")
-	fmt.Println("  addUser <username>                        Add a new user")
+	fmt.Println("  addUser <username> <password>              Add a new user")
 	fmt.Println("  listUsers                                  List all users")
 }
 
@@ -839,7 +840,7 @@ func (store *UserStore) saveUsersToFile() error {
 }
 
 // Modify the existing AddUser method to save to memory and then to file
-func (store *UserStore) AddUser(username string) error {
+func (store *UserStore) AddUser(username, password string) error {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 
@@ -847,7 +848,7 @@ func (store *UserStore) AddUser(username string) error {
 		return errors.New("user already exists")
 	}
 
-	store.users[username] = User{Username: username}
+	store.users[username] = User{Username: username, Password: password}
 
 	if err := store.saveUsersToFile(); err != nil {
 		return err
@@ -856,13 +857,14 @@ func (store *UserStore) AddUser(username string) error {
 }
 
 func handleAddUser(args []string) {
-	if len(args) != 1 {
-		logger.Info("Usage: adduser <username>")
+	if len(args) != 2 {
+		logger.Info("Usage: addUser <username> <password>")
 		return
 	}
 
 	username := args[0]
-	if err := userStore.AddUser(username); err != nil {
+	password := args[1]
+	if err := userStore.AddUser(username, password); err != nil {
 		logger.Error("Failed to add user", "error", err)
 		return
 	}
@@ -876,7 +878,7 @@ func addUserHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := userStore.AddUser(user.Username); err != nil {
+	if err := userStore.AddUser(user.Username, user.Password); err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
