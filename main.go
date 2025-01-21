@@ -135,22 +135,28 @@ func loadUsersFromFile() error {
 		}
 	}(file)
 
-	users := make(map[string]User) // Match the type used in saveUsersToFile
+	users := make(map[string]User)
 	if err := json.NewDecoder(file).Decode(&users); err != nil {
 		return err
 	}
 
-	userStore.users = users // Update the userStore with loaded users
+	userStore.users = users
 
 	return nil
 }
 
 func taskHandler(w http.ResponseWriter, r *http.Request) {
 	traceID := r.Context().Value(traceIDKey).(string)
-	userName := r.URL.Query().Get("username") // Get username from query parameters
+	userName := r.URL.Query().Get("username")
 
 	if userName == "" {
 		http.Error(w, "Username is required", http.StatusBadRequest)
+		return
+	}
+
+	// Check if the username exists
+	if !usernameExists(userName) {
+		http.Error(w, "Username does not exist", http.StatusNotFound)
 		return
 	}
 
@@ -319,6 +325,10 @@ func handleAdd(args []string) {
 
 	userName := args[0]
 	command := strings.Join(args[1:], " ")
+
+	if !usernameExists(userName) {
+		return
+	}
 
 	quoteRegex := regexp.MustCompile(`"(.*?)"`)
 	matches := quoteRegex.FindAllStringSubmatch(command, -1)
@@ -924,4 +934,13 @@ func handleListUsers() {
 	for _, user := range users {
 		logger.Info("User found", "username", user.Username)
 	}
+}
+
+func usernameExists(userName string) bool {
+	_, exists := userStore.users[userName]
+	if !exists {
+		logger.Error("Username does not exist", "userName", userName)
+		fmt.Printf("Error: Username '%s' does not exist.\n", userName)
+	}
+	return exists
 }
