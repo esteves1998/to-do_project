@@ -21,6 +21,7 @@ import (
 )
 
 var isLoggedIn bool
+var loggedInUsername string
 
 type Task struct {
 	ID          int    `json:"id"`
@@ -149,7 +150,9 @@ func loadUsersFromFile() error {
 
 func taskHandler(w http.ResponseWriter, r *http.Request) {
 	traceID := r.Context().Value(traceIDKey).(string)
-	userName := r.URL.Query().Get("username")
+
+	// Use the stored logged-in username
+	userName := loggedInUsername
 
 	if userName == "" {
 		http.Error(w, "Username is required", http.StatusBadRequest)
@@ -159,6 +162,7 @@ func taskHandler(w http.ResponseWriter, r *http.Request) {
 	// Check if the username exists
 	if !usernameExists(userName) {
 		http.Error(w, "Username does not exist", http.StatusNotFound)
+		logger.Error("Username does not exist", "traceID", traceID, "userName", userName)
 		return
 	}
 
@@ -320,31 +324,32 @@ func runCLI() {
 
 func printHelp() {
 	fmt.Println("Commands:")
-	fmt.Println("  add <username> \"<title>\" \"<description>\"    Add a new task for a user")
-	fmt.Println("  list <username>                         List all tasks for a user")
-	fmt.Println("  complete <username> <id>                Mark a task as completed for a user")
-	fmt.Println("  delete <username> <id>                  Delete a task for a user")
-	fmt.Println("  help                                     Show this help message")
-	fmt.Println("  exit                                     Exit the program")
-	fmt.Println("  addUser <username> <password>              Add a new user")
-	fmt.Println("  listUsers                                  List all users")
+	fmt.Println("  add \"<title>\" \"<description>\"    Add a new task for the logged-in user")
+	fmt.Println("  list                                 List all tasks for the logged-in user")
+	fmt.Println("  complete <id>                       Mark a task as completed for the logged-in user")
+	fmt.Println("  delete <id>                         Delete a task for the logged-in user")
+	fmt.Println("  help                                 Show this help message")
+	fmt.Println("  exit                                 Exit the program")
+	fmt.Println("  addUser <username> <password>       Add a new user (requires registration)")
+	fmt.Println("  listUsers                            List all users")
 }
 
 func handleAdd(args []string) {
-	if len(args) < 3 {
-		logger.Info("Usage: add <username> \"<title>\" \"<description>\"")
+	if len(args) < 2 {
+		logger.Info("Usage: add \"<title>\" \"<description>\"")
 		return
 	}
 
-	userName := args[0]
-	command := strings.Join(args[1:], " ")
+	// Use the stored logged-in username
+	userName := loggedInUsername
 
-	if !usernameExists(userName) {
+	if userName == "" {
+		logger.Info("You must be logged in to add a task.")
 		return
 	}
 
 	quoteRegex := regexp.MustCompile(`"(.*?)"`)
-	matches := quoteRegex.FindAllStringSubmatch(command, -1)
+	matches := quoteRegex.FindAllStringSubmatch(strings.Join(args, " "), -1)
 
 	if len(matches) < 2 {
 		logger.Info("Usage: add \"<title>\" \"<description>\"", "args", args)
@@ -360,25 +365,27 @@ func handleAdd(args []string) {
 	}
 	resp, err := http.Post(fmt.Sprintf("http://localhost:8080/tasks?username=%s", userName), "application/json", toJSON(task))
 	if err != nil {
-		logger.Error("Failed to add task", "taskID", task.ID, "error", err)
+		logger.Error("Failed to add task", "error", err)
 		return
 	}
 	defer safeClose(resp.Body)
 
 	if resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusOK {
-		logger.Info("Task added successfully", "taskID", task.ID)
+		logger.Info("Task added successfully", "title", title)
 	} else {
 		logger.Error("Failed to add task", "error", err)
 	}
 }
 
 func handleList(args []string) {
-	if len(args) != 1 {
-		logger.Info("Usage: list <username>")
+	// Use the stored logged-in username
+	userName := loggedInUsername
+
+	if userName == "" {
+		logger.Info("You must be logged in to list tasks.")
 		return
 	}
 
-	userName := args[0]
 	resp, err := http.Get(fmt.Sprintf("http://localhost:8080/tasks?username=%s", userName))
 	if err != nil {
 		logger.Error("Failed to list tasks", "error", err)
@@ -435,13 +442,20 @@ func handleGetTaskByID(args []string) {
 }
 
 func handleComplete(args []string) {
-	if len(args) < 2 {
-		logger.Info("Usage: complete <username> <id>")
+	if len(args) < 1 {
+		logger.Info("Usage: complete <id>")
 		return
 	}
 
-	userName := args[0]
-	id := args[1]
+	// Use the stored logged-in username
+	userName := loggedInUsername
+
+	if userName == "" {
+		logger.Info("You must be logged in to complete a task.")
+		return
+	}
+
+	id := args[0]
 	url := fmt.Sprintf("http://localhost:8080/tasks/%s?username=%s", id, userName)
 
 	req, err := http.NewRequest(http.MethodPut, url, nil)
@@ -466,14 +480,21 @@ func handleComplete(args []string) {
 }
 
 func handleDelete(args []string) {
-	if len(args) < 2 {
-		logger.Info("Usage: delete <username> <id>")
+	if len(args) < 1 {
+		logger.Info("Usage: delete <id>")
 		return
 	}
 
-	userName := args[0]
-	id := args[1]
-	url := fmt.Sprintf("http://localhost:8080/tasks/%s?username=%s", id, userName)
+	// Use the stored logged-in username
+	userName := loggedInUsername
+
+	if userName == "" {
+		logger.Info("You must be logged in to delete a task.")
+		return
+	}
+
+	id := args[0]
+	url := fmt.Sprintf("http://localhost:8080/tasks/%s?username=%s", id, userName) // Use the stored username
 
 	req, err := http.NewRequest(http.MethodDelete, url, nil)
 	if err != nil {
@@ -1014,7 +1035,8 @@ func handleLogin(scanner *bufio.Scanner) {
 		isLoggedIn = false // Set login status to false
 	} else {
 		fmt.Println("Login successful!")
-		isLoggedIn = true // Set login status to true
+		isLoggedIn = true           // Set login status to true
+		loggedInUsername = username // Store the logged-in username
 	}
 }
 
@@ -1033,3 +1055,7 @@ func (store *UserStore) CheckPassword(username, password string) error {
 
 	return nil
 }
+
+//check api
+//remove add user
+//fix list so it shows the tasks isntead of the username
