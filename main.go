@@ -52,6 +52,9 @@ const traceIDKey = "TraceID"
 var taskStore TaskStore
 
 func main() {
+	// Initialize the user store
+	initializeUserStore()
+
 	// Command-line argument to choose the task store type.
 	storeType := flag.String("store", "memory", "Specify the task store: 'memory' or 'json'")
 	flag.Parse()
@@ -99,6 +102,17 @@ func TraceMiddleware(next http.Handler) http.Handler {
 		logger.Info("Request received", "method", r.Method, "url", r.URL.String(), "traceID", traceID)
 		next.ServeHTTP(w, r)
 	})
+}
+
+// Function to initialize the user store by checking and creating users.json
+func initializeUserStore() {
+	if _, err := os.Stat("users.json"); os.IsNotExist(err) {
+		// Create an empty users.json file
+		if err := createEmptyJSONFile("users.json"); err != nil {
+			logger.Error("Failed to create empty users.json file", "error", err)
+			os.Exit(1)
+		}
+	}
 }
 
 func taskHandler(w http.ResponseWriter, r *http.Request) {
