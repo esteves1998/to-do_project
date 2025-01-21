@@ -302,7 +302,7 @@ func runCLI() {
 		case "add":
 			handleAdd(args)
 		case "list":
-			handleList(args)
+			handleList()
 		case "get":
 			handleGetTaskByID(args)
 		case "complete":
@@ -374,7 +374,7 @@ func handleAdd(args []string) {
 	}
 }
 
-func handleList(args []string) {
+func handleList() {
 	// Use the stored logged-in username
 	userName := loggedInUsername
 
@@ -895,22 +895,6 @@ func (store *UserStore) AddUser(username, password string) error {
 		return err
 	}
 	return nil
-}
-
-func handleAddUser(args []string) {
-	if len(args) != 2 {
-		logger.Info("Usage: addUser <username> <password>")
-		return
-	}
-
-	username := args[0]
-	password := args[1]
-	if err := userStore.AddUser(username, password); err != nil {
-		logger.Error("Failed to add user", "error", err)
-		return
-	}
-
-	logger.Info("User added successfully", "username", username)
 }
 
 func addUserHandler(w http.ResponseWriter, r *http.Request) {
