@@ -297,8 +297,6 @@ func runCLI() {
 		args := parts[1:]
 
 		switch cmd {
-		case "addUser":
-			handleAddUser(args)
 		case "listUsers":
 			handleListUsers()
 		case "add":
@@ -330,7 +328,6 @@ func printHelp() {
 	fmt.Println("  delete <id>                         Delete a task for the logged-in user")
 	fmt.Println("  help                                 Show this help message")
 	fmt.Println("  exit                                 Exit the program")
-	fmt.Println("  addUser <username> <password>       Add a new user (requires registration)")
 	fmt.Println("  listUsers                            List all users")
 }
 
