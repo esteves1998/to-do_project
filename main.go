@@ -63,14 +63,14 @@ func main() {
 	switch *storeType {
 	case "json":
 		taskStore = newJSONTaskStore("tasks.json")
-		userStore = UserStore{users: make(map[string]User)}
 	case "memory":
 		taskStore = localTaskStore()
-		userStore = UserStore{users: make(map[string]User)}
 	default:
 		fmt.Println("Invalid store type. Use 'memory' or 'json'.")
 		os.Exit(1)
 	}
+
+	initializeUserStore()
 
 	// Start the server and CLI concurrently.
 	go startServer()
@@ -112,7 +112,36 @@ func initializeUserStore() {
 			logger.Error("Failed to create empty users.json file", "error", err)
 			os.Exit(1)
 		}
+	} else {
+		// Load users from the existing users.json file
+		if err := loadUsersFromFile(); err != nil {
+			logger.Error("Failed to load users from file", "error", err)
+			os.Exit(1)
+		}
 	}
+}
+
+// Function to load users from users.json
+func loadUsersFromFile() error {
+	file, err := os.Open("users.json")
+	if err != nil {
+		return err
+	}
+	defer func(file *os.File) {
+		err := file.Close()
+		if err != nil {
+			logger.Error("Error closing file:", "error", err)
+		}
+	}(file)
+
+	users := make(map[string]User) // Match the type used in saveUsersToFile
+	if err := json.NewDecoder(file).Decode(&users); err != nil {
+		return err
+	}
+
+	userStore.users = users // Update the userStore with loaded users
+
+	return nil
 }
 
 func taskHandler(w http.ResponseWriter, r *http.Request) {
