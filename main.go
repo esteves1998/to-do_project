@@ -786,6 +786,30 @@ func (store *jsonTaskStore) CompleteTask(userName string, id int) error {
 	return errors.New("task not found for user")
 }
 
+// Function to save users to a JSON file
+func (store *UserStore) saveUsersToFile() error {
+	file, err := os.Create("users.json")
+	if err != nil {
+		return err
+	}
+	defer func(file *os.File) {
+		err := file.Close()
+		if err != nil {
+			logger.Error("Error closing file:", "error", err)
+		}
+	}(file)
+
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(store.users); err != nil {
+		logger.Error("Failed to encode users to file", "error", err)
+		return err
+	}
+	logger.Info("Users saved to file", "users", store.users) // Log the saved users
+	return nil
+}
+
+// Modify the existing AddUser method to save to memory and then to file
 func (store *UserStore) AddUser(username string) error {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
@@ -795,6 +819,10 @@ func (store *UserStore) AddUser(username string) error {
 	}
 
 	store.users[username] = User{Username: username}
+
+	if err := store.saveUsersToFile(); err != nil {
+		return err
+	}
 	return nil
 }
 
