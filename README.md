@@ -10,6 +10,7 @@ Task Manager is a simple application written in Go that allows you to manage tas
 - Delete tasks.
 - Interactive CLI for managing tasks.
 - RESTful API for external integrations.
+- Web interface for managing tasks and users.
 
 ## Requirements
 
@@ -24,11 +25,15 @@ Task Manager is a simple application written in Go that allows you to manage tas
 
 2. The REST API server will start at `http://localhost:8080`, and the CLI will be ready for interactive commands.
 
+3. To access the web app, navigate to `http://localhost:8080/login` in your browser.
+
 ## REST API Endpoints
 
 The application exposes the following RESTful endpoints:
 
-### List All Tasks
+### Task Management Endpoints
+
+#### List All Tasks
 - **GET** `/tasks`
 - **Response:**
   ```json
@@ -48,7 +53,7 @@ The application exposes the following RESTful endpoints:
   ]
   ```
 
-### Add a Task
+#### Add a Task
 - **POST** `/tasks`
 - **Request Body:**
   ```json
@@ -67,7 +72,7 @@ The application exposes the following RESTful endpoints:
   }
   ```
 
-### Mark a Task as Completed
+#### Mark a Task as Completed
 - **PUT** `/tasks/:id`
 - **Request Body:**
   ```json
@@ -77,7 +82,7 @@ The application exposes the following RESTful endpoints:
   ```
 - **Response:** Status `200 OK`
 
-### Delete a Task
+#### Delete a Task
 - **DELETE** `/tasks/:id`
 - **Request Body:**
   ```json
@@ -87,11 +92,46 @@ The application exposes the following RESTful endpoints:
   ```
 - **Response:** Status `200 OK`
 
+### User Management Endpoints
+
+#### List All Users
+- **GET** `/users/list`
+- **Response:**
+  ```json
+  [
+    {
+      "username": "john_doe"
+    },
+    {
+      "username": "jane_doe"
+    }
+  ]
+  ```
+
+#### Register a New User
+- **POST** `/users`
+- **Request Body:**
+  ```json
+  {
+    "username": "john_doe",
+    "password": "securepassword"
+  }
+  ```
+- **Response:** Status `201 Created`
+
+### Web Application Endpoints
+
+- **Login Page:** `http://localhost:8080/login`
+- **Register Page:** `http://localhost:8080/register`
+- **Task View (Web):** `http://localhost:8080/tasks/view?username=<username>`
+
 ## CLI Commands
 
 The CLI allows you to interact with the application interactively. Below are the supported commands:
 
-### Add a Task
+### Task Commands
+
+#### Add a Task
 ```
 add "Buy groceries" "Milk, eggs, bread, and butter"
 ```
@@ -100,7 +140,7 @@ add "Buy groceries" "Milk, eggs, bread, and butter"
 Task added successfully.
 ```
 
-### List All Tasks
+#### List All Tasks
 ```
 list
 ```
@@ -110,7 +150,7 @@ ID: 1, Title: Buy groceries, Description: Milk, eggs, bread, and butter, Complet
 ID: 2, Title: Prepare presentation, Description: Slides for the team meeting, Completed: false
 ```
 
-### List a Task
+#### List a Task
 ```
 get <id>
 ```
@@ -119,7 +159,7 @@ get <id>
 ID: <id>, Title: Buy groceries, Description: Milk, eggs, bread, and butter, Completed: false
 ```
 
-### Complete a Task
+#### Complete a Task
 ```
 complete <id>
 ```
@@ -128,13 +168,51 @@ complete <id>
 Task 1 marked as completed.
 ```
 
-### Delete a Task
+#### Delete a Task
 ```
 delete <id>
 ```
 **Output:**
 ```
 Task 1 deleted successfully.
+```
+
+### User Commands
+
+#### Register a User
+```
+register (2)
+```
+**Process:**
+1. Enter username: `<username>`
+2. Enter password: `<password>`
+
+**Output:**
+```
+Registration successful! You can now log in.
+```
+
+#### Login as a User
+```
+login (1)
+```
+**Process:**
+1. Enter username: `<username>`
+2. Enter password: `<password>`
+
+**Output:**
+```
+Login successful!
+```
+
+#### List All Users
+```
+users
+```
+**Output:**
+```
+User: john_doe
+User: jane_doe
 ```
 
 ### Display Help
@@ -148,6 +226,9 @@ Commands:
   list                         List all tasks
   complete <id>                Mark a task as completed
   delete <id>                  Delete a task
+  register                     Register a new user
+  login                        Login as a user
+  users                        List all users
   help                         Show this help message
   exit                         Exit the program
 ```
@@ -156,11 +237,3 @@ Commands:
 ```
 exit
 ```
-**Output:**
-```
-Exiting Task Manager.
-```
-
-## Notes
-
-- Ensure the server is running at `http://localhost:8080` for the CLI to interact with the REST API.
