@@ -11,9 +11,18 @@ import (
 
 func TraceMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Generate and attach a unique trace ID
 		traceID := uuid.NewString()
 		ctx := context.WithValue(r.Context(), traceIDKey, traceID)
 		r = r.WithContext(ctx)
+
+		// Override HTTP method if `_method` is provided
+		if r.Method == http.MethodPost {
+			overrideMethod := r.FormValue("_method")
+			if overrideMethod == http.MethodPut || overrideMethod == http.MethodDelete {
+				r.Method = overrideMethod
+			}
+		}
 
 		logger.Info("Request received", "method", r.Method, "url", r.URL.String(), "traceID", traceID)
 		next.ServeHTTP(w, r)

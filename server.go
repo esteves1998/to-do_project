@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"html/template"
 	"net/http"
 	"os"
 	"strconv"
@@ -12,10 +13,13 @@ const traceIDKey = "TraceID"
 
 func startServer() {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/tasks", taskHandler)
-	mux.HandleFunc("/tasks/", singleTaskHandler) // For operations that require a task ID
-	mux.HandleFunc("/users", addUserHandler)
-	mux.HandleFunc("/users/list", listUsersHandler)
+	mux.HandleFunc("/tasks", taskHandler)           // Task list and creation
+	mux.HandleFunc("/tasks/", singleTaskHandler)    // Single task operations by ID
+	mux.HandleFunc("/users", addUserHandler)        // User creation
+	mux.HandleFunc("/users/list", listUsersHandler) // List users
+	mux.HandleFunc("/login", loginHandler)          // Login page
+	mux.HandleFunc("/register", registerHandler)    // Registration page
+	mux.HandleFunc("/tasks/view", tasksHandler)     // View tasks (templated UI)
 
 	loggedMux := TraceMiddleware(mux)
 
@@ -48,8 +52,12 @@ func addUserHandler(w http.ResponseWriter, r *http.Request) {
 func taskHandler(w http.ResponseWriter, r *http.Request) {
 	traceID := r.Context().Value(traceIDKey).(string)
 
-	// Use the stored logged-in username
-	userName := loggedInUsername
+	var userName string
+	if r.URL.Query().Get("username") != "" { // API case
+		userName = r.URL.Query().Get("username")
+	} else { // CLI case or session
+		userName = loggedInUsername
+	}
 
 	if userName == "" {
 		http.Error(w, "Username is required", http.StatusBadRequest)
@@ -108,11 +116,11 @@ func singleTaskHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSONResponse(w, http.StatusOK, task)
 
-	case http.MethodPut: // Update a task (mark as complete)
-		logger.Info("Completing task", "taskID", id, "traceID", traceID, "userName", userName)
+	case http.MethodPut: // Mark task as complete
+		logger.Info("Marking task as complete", "taskID", id, "traceID", traceID, "userName", userName)
 		if err := taskStore.CompleteTask(userName, id); err != nil {
 			logger.Error("Failed to complete task", "taskID", id, "traceID", traceID, "userName", userName, "error", err)
-			http.Error(w, err.Error(), http.StatusNotFound)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -129,5 +137,95 @@ func singleTaskHandler(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		logger.Error("Unsupported method", "method", r.Method, "traceID", traceID)
+	}
+}
+
+func loginHandler(w http.ResponseWriter, r *http.Request) {
+	tmpl, _ := template.ParseFiles("templates/login.html")
+
+	if r.Method == http.MethodGet {
+		err := tmpl.Execute(w, nil)
+		if err != nil {
+			return
+		}
+		return
+	}
+
+	if r.Method == http.MethodPost {
+		username := r.FormValue("username")
+		password := r.FormValue("password")
+
+		if err := userStore.CheckPassword(username, password); err != nil {
+			err := tmpl.Execute(w, map[string]string{"Error": "Invalid credentials"})
+			if err != nil {
+				return
+			}
+			return
+		}
+
+		//set flag and username so that CLI works even if we log in through the web app
+		isLoggedIn = true
+		loggedInUsername = username
+
+		http.Redirect(w, r, "/tasks/view?username="+username, http.StatusSeeOther)
+	}
+}
+
+func registerHandler(w http.ResponseWriter, r *http.Request) {
+	tmpl, _ := template.ParseFiles("templates/register.html")
+
+	if r.Method == http.MethodGet {
+		err := tmpl.Execute(w, nil)
+		if err != nil {
+			return
+		}
+		return
+	}
+
+	if r.Method == http.MethodPost {
+		username := r.FormValue("username")
+		password := r.FormValue("password")
+
+		if err := userStore.AddUser(username, password); err != nil {
+			err := tmpl.Execute(w, map[string]string{"Error": "User already exists"})
+			if err != nil {
+				return
+			}
+			return
+		}
+
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+	}
+}
+
+func tasksHandler(w http.ResponseWriter, r *http.Request) {
+	username := r.URL.Query().Get("username")
+	if username == "" {
+		http.Error(w, "User not specified", http.StatusBadRequest)
+		return
+	}
+
+	if !usernameExists(username) {
+		http.Error(w, "User does not exist", http.StatusNotFound)
+		return
+	}
+
+	tasks := taskStore.ListTasks(username)
+	tmpl, err := template.ParseFiles("templates/tasks.html")
+	if err != nil {
+		http.Error(w, "Unable to load template", http.StatusInternalServerError)
+		return
+	}
+
+	// Render the template with the task list and username
+	err = tmpl.Execute(w, struct {
+		Username string
+		Tasks    []Task
+	}{
+		Username: username,
+		Tasks:    tasks,
+	})
+	if err != nil {
+		http.Error(w, "Unable to render template", http.StatusInternalServerError)
 	}
 }

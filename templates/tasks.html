@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tasks for {{.Username}}</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f9;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+
+        .container {
+            background-color: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+            width: 400px;
+        }
+
+        h1 {
+            text-align: center;
+            color: #333;
+        }
+
+        .task-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .task-item {
+            background-color: #f9f9f9;
+            padding: 15px;
+            margin-bottom: 10px;
+            border-radius: 6px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .task-item:hover {
+            background-color: #f1f1f1;
+        }
+
+        .task-actions button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 12px;
+            font-size: 14px;
+            cursor: pointer;
+            margin-left: 5px;
+        }
+
+        .task-actions button:hover {
+            background-color: #0056b3;
+        }
+
+        .task-actions button.delete {
+            background-color: #f44336;
+        }
+
+        .task-actions button.delete:hover {
+            background-color: #d32f2f;
+        }
+
+        form {
+            display: flex;
+            flex-direction: column;
+            margin-top: 20px;
+        }
+
+        label {
+            font-size: 14px;
+            margin-bottom: 5px;
+        }
+
+        input {
+            padding: 10px;
+            margin-bottom: 15px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 16px;
+        }
+
+        input:focus {
+            border-color: #007bff;
+            outline: none;
+        }
+
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 10px;
+            border: none;
+            border-radius: 4px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        p {
+            text-align: center;
+            color: #666;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Tasks for {{.Username}}</h1>
+    <ul class="task-list">
+        {{range .Tasks}}
+        <li class="task-item" id="task-{{.ID}}">
+            <div>
+                <strong>{{.Title}}</strong> - {{.Description}}
+                {{if .Completed}} <span>(Completed)</span>{{end}}
+            </div>
+            <div class="task-actions">
+                {{if not .Completed}}
+                <button class="complete-task-button" data-task-id="{{.ID}}">Complete</button>
+                {{end}}
+                <button class="delete-task-button delete" data-task-id="{{.ID}}">Delete</button>
+            </div>
+        </li>
+        {{else}}
+        <p>No tasks available</p>
+        {{end}}
+    </ul>
+
+    <form id="addTaskForm">
+        <label for="title">Task Title</label>
+        <input type="text" name="title" id="title" placeholder="Enter task title" required>
+
+        <label for="description">Task Description</label>
+        <input type="text" name="description" id="description" placeholder="Enter task description" required>
+
+        <button type="submit">Add Task</button>
+    </form>
+</div>
+
+<script>
+    // Handle task completion with AJAX
+    document.querySelectorAll('.complete-task-button').forEach(function(button) {
+        button.addEventListener('click', function(event) {
+            const taskId = button.getAttribute('data-task-id');
+            fetch(`/tasks/${taskId}?username={{.Username}}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ _method: 'PUT' })
+            })
+                .then(response => {
+                    if (response.ok) {
+                        window.location.reload(); // Refresh the page after task completion
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                });
+        });
+    });
+
+    // Handle task deletion with AJAX
+    document.querySelectorAll('.delete-task-button').forEach(function(button) {
+        button.addEventListener('click', function(event) {
+            const taskId = button.getAttribute('data-task-id');
+            fetch(`/tasks/${taskId}?username={{.Username}}`, {
+                method: 'DELETE',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ _method: 'DELETE' })
+            })
+                .then(response => {
+                    if (response.ok) {
+                        document.getElementById(`task-${taskId}`).remove();
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                });
+        });
+    });
+
+    // Handle task adding with AJAX
+    document.getElementById('addTaskForm').addEventListener('submit', function(event) {
+        event.preventDefault();
+
+        const formData = new FormData(event.target);
+        const data = {
+            title: formData.get('title'),
+            description: formData.get('description'),
+        };
+
+        fetch('/tasks?username={{.Username}}', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(data),
+        })
+            .then(response => {
+                if (response.ok) {
+                    window.location.reload(); // Reload the page after task is added
+                } else {
+                    alert('Failed to add task');
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+            });
+    });
+</script>
+
+</body>
+</html>
