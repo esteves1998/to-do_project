@@ -3,11 +3,33 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
+	"fmt"
 	"github.com/google/uuid"
 	"io"
 	"net/http"
 	"os"
 )
+
+func parseStoreType() string {
+	// Command-line argument to choose the task store type.
+	storeType := flag.String("store", "memory", "Specify the task store: 'memory' or 'json'")
+	flag.Parse()
+	return *storeType
+}
+
+func initializeTaskStore(storeType string) {
+	// Initialize the task store based on the provided type.
+	switch storeType {
+	case "json":
+		taskStore = newJSONTaskStore("tasks.json")
+	case "memory":
+		taskStore = localTaskStore()
+	default:
+		fmt.Println("Invalid store type. Use 'memory' or 'json'.")
+		os.Exit(1)
+	}
+}
 
 func TraceMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

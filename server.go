@@ -64,13 +64,6 @@ func taskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if the username exists
-	if !usernameExists(userName) {
-		http.Error(w, "Username does not exist", http.StatusNotFound)
-		logger.Error("Username does not exist", "traceID", traceID, "userName", userName)
-		return
-	}
-
 	switch r.Method {
 	case http.MethodGet:
 		logger.Info("Listing tasks", "traceID", traceID, "userName", userName)
@@ -202,11 +195,6 @@ func tasksHandler(w http.ResponseWriter, r *http.Request) {
 	username := r.URL.Query().Get("username")
 	if username == "" {
 		http.Error(w, "User not specified", http.StatusBadRequest)
-		return
-	}
-
-	if !usernameExists(username) {
-		http.Error(w, "User does not exist", http.StatusNotFound)
 		return
 	}
 

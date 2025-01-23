@@ -34,33 +34,6 @@ func initializeUserStore() {
 	}
 }
 
-func (store *UserStore) AddUser(username, password string) error {
-	store.mutex.Lock()
-	defer store.mutex.Unlock()
-
-	if _, exists := store.users[username]; exists {
-		return errors.New("user already exists")
-	}
-
-	store.users[username] = User{Username: username, Password: password}
-
-	if err := store.saveUsersToFile(); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (store *UserStore) ListUsers() []User {
-	store.mutex.Lock()
-	defer store.mutex.Unlock()
-
-	users := make([]User, 0, len(store.users))
-	for _, user := range store.users {
-		users = append(users, user)
-	}
-	return users
-}
-
 func loadUsersFromFile() error {
 	file, err := os.Open("users.json")
 	if err != nil {
@@ -103,6 +76,33 @@ func (store *UserStore) saveUsersToFile() error {
 	}
 	logger.Info("Users saved to file", "users", store.users) // Log the saved users
 	return nil
+}
+
+func (store *UserStore) AddUser(username, password string) error {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+
+	if _, exists := store.users[username]; exists {
+		return errors.New("user already exists")
+	}
+
+	store.users[username] = User{Username: username, Password: password}
+
+	if err := store.saveUsersToFile(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (store *UserStore) ListUsers() []User {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+
+	users := make([]User, 0, len(store.users))
+	for _, user := range store.users {
+		users = append(users, user)
+	}
+	return users
 }
 
 func handleListUsers() {
@@ -189,15 +189,6 @@ func handleLogin(scanner *bufio.Scanner) {
 		isLoggedIn = true
 		loggedInUsername = username
 	}
-}
-
-func usernameExists(userName string) bool {
-	_, exists := userStore.users[userName]
-	if !exists {
-		logger.Error("Username does not exist", "userName", userName)
-		fmt.Printf("Error: Username '%s' does not exist.\n", userName)
-	}
-	return exists
 }
 
 func (store *UserStore) CheckPassword(username, password string) error {
